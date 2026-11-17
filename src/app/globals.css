@@ -328,6 +328,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 999px;
   width: fit-content;
+  margin-inline: auto;
 }
 
 .account-toggle button {
@@ -339,6 +340,52 @@ button:disabled {
 .account-toggle button.on {
   background: var(--spruce);
   color: white;
+}
+
+.login-page {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 1.5rem;
+}
+
+.login-card {
+  width: min(100%, 22rem);
+  text-align: center;
+  align-items: center;
+}
+
+.login-card .stack,
+.login-form {
+  width: 100%;
+  justify-items: center;
+}
+
+.login-card label {
+  width: min(100%, 16rem);
+  text-align: left;
+}
+
+.login-card input {
+  width: 100%;
+  max-width: 16rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.95rem;
+}
+
+.login-card .muted,
+.login-card .status,
+.login-card .mono {
+  max-width: 18rem;
+  margin-inline: auto;
+}
+
+.login-actions {
+  justify-content: center;
+}
+
+.login-form > button[type="submit"] {
+  margin-top: 0.25rem;
 }
 
 @media (max-width: 640px) {

@@ -16,21 +16,23 @@ export function LoginForm() {
 
   if (ready && user) {
     return (
-      <section className="panel stack">
-        <h2>Signed in</h2>
-        <p className="muted">
-          You are {user.name}. Your account id is what an owner pastes when they invite you.
-        </p>
-        <p className="mono">{user.id}</p>
-        <div className="row">
-          <button type="button" onClick={() => router.push("/")}>
-            Go to your tables
-          </button>
-          <button type="button" className="secondary" onClick={() => void backend.signOut()}>
-            Sign out
-          </button>
-        </div>
-      </section>
+      <div className="login-page">
+        <section className="panel stack login-card">
+          <h2>Signed in</h2>
+          <p className="muted">
+            You are {user.name}. Your account id is what an owner pastes when they invite you.
+          </p>
+          <p className="mono">{user.id}</p>
+          <div className="row login-actions">
+            <button type="button" onClick={() => router.push("/")}>
+              Go to your tables
+            </button>
+            <button type="button" className="secondary" onClick={() => void backend.signOut()}>
+              Sign out
+            </button>
+          </div>
+        </section>
+      </div>
     );
   }
 
@@ -51,62 +53,64 @@ export function LoginForm() {
   }
 
   return (
-    <section className="panel stack">
-      <h2>{mode === "create" ? "Create an account" : "Sign in"}</h2>
-      <p className="muted">
-        Table needs a signed-in account. There is no guest shelf here — membership is the point.
-      </p>
-      {!backend.configured ? (
-        <p className="status" role="status">
-          Firebase is not configured yet. Copy `.env.example` to `.env.local` and paste the web app
-          config.
+    <div className="login-page">
+      <section className="panel stack login-card">
+        <h2>{mode === "create" ? "Create an account" : "Sign in"}</h2>
+        <p className="muted">
+          Table needs a signed-in account. There is no guest shelf here — membership is the point.
         </p>
-      ) : null}
-      <div className="account-toggle">
-        <button type="button" className={mode === "create" ? "on" : ""} onClick={() => setMode("create")}>
-          Create account
-        </button>
-        <button type="button" className={mode === "signin" ? "on" : ""} onClick={() => setMode("signin")}>
-          Sign in
-        </button>
-      </div>
-      <form className="stack" onSubmit={(event) => void submit(event)}>
-        {mode === "create" ? (
-          <label>
-            Display name
-            <input value={name} onChange={(event) => setName(event.target.value)} required minLength={1} maxLength={40} />
-          </label>
+        {!backend.configured ? (
+          <p className="status" role="status">
+            Firebase is not configured yet. Copy `.env.example` to `.env.local` and paste the web app
+            config.
+          </p>
         ) : null}
-        <label>
-          Email
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            required
-            autoComplete="email"
-          />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            required
-            minLength={8}
-            autoComplete={mode === "create" ? "new-password" : "current-password"}
-          />
-        </label>
-        <button type="submit" disabled={busy || !backend.configured}>
-          {mode === "create" ? "Create account" : "Sign in"}
-        </button>
-      </form>
-      {message ? (
-        <p className="status" role="status">
-          {message}
-        </p>
-      ) : null}
-    </section>
+        <div className="account-toggle">
+          <button type="button" className={mode === "create" ? "on" : ""} onClick={() => setMode("create")}>
+            Create account
+          </button>
+          <button type="button" className={mode === "signin" ? "on" : ""} onClick={() => setMode("signin")}>
+            Sign in
+          </button>
+        </div>
+        <form className="stack login-form" onSubmit={(event) => void submit(event)}>
+          {mode === "create" ? (
+            <label>
+              Display name
+              <input value={name} onChange={(event) => setName(event.target.value)} required minLength={1} maxLength={40} />
+            </label>
+          ) : null}
+          <label>
+            Email
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+              autoComplete="email"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              minLength={8}
+              autoComplete={mode === "create" ? "new-password" : "current-password"}
+            />
+          </label>
+          <button type="submit" disabled={busy || !backend.configured}>
+            {mode === "create" ? "Create account" : "Sign in"}
+          </button>
+        </form>
+        {message ? (
+          <p className="status" role="status">
+            {message}
+          </p>
+        ) : null}
+      </section>
+    </div>
   );
 }
