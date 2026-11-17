@@ -2,7 +2,9 @@
 
 A shared table for a small group. The owner invites members by account id. Each member edits only their own seat. Strangers and signed-out visitors get nothing.
 
-Accounts use Firebase Authentication (email/password). Data uses Cloud Firestore. Hosting can use Firebase Hosting with the static export in `out/`, the same pattern as Shelf and Study Deck.
+Accounts use Firebase Authentication (email/password). Data uses Cloud Firestore. Hosting uses Firebase Hosting with the static export in `out/`, the same pattern as Shelf and Study Deck.
+
+The Firebase project is `shared-table-b46f`. The public site is [https://shared-table-b46f.web.app](https://shared-table-b46f.web.app).
 
 ## Permission brief
 
@@ -38,20 +40,14 @@ npm run dev
 
 Copy `.env.example` to `.env.local` and paste the web app config from Firebase Project settings. Those values are the public client config, not a service account. Do not commit `.env.local`.
 
-## Before the app can save data
-
-1. Create a Firebase project and a web app.
-2. In Authentication, enable the Email/Password provider.
-3. Create a Cloud Firestore database in production mode.
-4. Put the project id in `.firebaserc`.
-5. Deploy rules, then hosting after a build:
+## Publish updates
 
 ```bash
 npm run build
 npx firebase-tools deploy --only firestore:rules,hosting
 ```
 
-Authorized domains should include `localhost` and your `*.web.app` / `*.firebaseapp.com` hosts.
+Authorized domains should include `localhost`, `shared-table-b46f.firebaseapp.com`, and `shared-table-b46f.web.app`.
 
 ## Prove the deny cases
 
