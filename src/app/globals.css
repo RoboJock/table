@@ -1,9 +1,12 @@
-:root {
+:root,
+[data-theme="light"] {
   --ink: #14231c;
   --muted: #4d5f55;
   --line: #c5d0c8;
   --paper: #f3f6f4;
   --panel: #ffffff;
+  --field: #f7faf8;
+  --field-line: #c5d0c8;
   --spruce: #1f5c45;
   --spruce-deep: #143d2e;
   --danger: #8a2f2f;
@@ -12,20 +15,20 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #e7eee9;
-    --muted: #9aada2;
-    --line: #2c3b34;
-    --paper: #0f1713;
-    --panel: #16211c;
-    --spruce: #6fbf9a;
-    --spruce-deep: #9fd9bd;
-    --danger: #e07a7a;
-    --focus: #7dcfb0;
-    --shadow: color-mix(in srgb, black 35%, transparent);
-    color-scheme: dark;
-  }
+[data-theme="dark"] {
+  --ink: #e7eee9;
+  --muted: #9aada2;
+  --line: #2c3b34;
+  --paper: #0f1713;
+  --panel: #16211c;
+  --field: #16211c;
+  --field-line: #2c3b34;
+  --spruce: #6fbf9a;
+  --spruce-deep: #9fd9bd;
+  --danger: #e07a7a;
+  --focus: #7dcfb0;
+  --shadow: color-mix(in srgb, black 35%, transparent);
+  color-scheme: dark;
 }
 
 * {
@@ -96,6 +99,29 @@ button {
   gap: 0.75rem;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.theme-toggle {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  padding: 0;
+  border: 1px solid var(--field-line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.theme-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 
 .topbar .who {
