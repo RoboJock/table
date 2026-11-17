@@ -65,7 +65,10 @@ service cloud.firestore {
     }
 
     match /tables/{tableId} {
-      allow read: if isMember(tableId);
+      // OwnerId equality lets "tables I own" queries pass rule checks.
+      // Membership still covers invited members opening a table by id.
+      allow read: if isMember(tableId)
+        || (signedIn() && resource.data.ownerId == request.auth.uid);
 
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly(['name', 'ownerId', 'createdAt'])

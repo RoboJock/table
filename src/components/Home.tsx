@@ -81,7 +81,23 @@ export function Home() {
         <p className="lede">
           Signed in as {user.name}. Share your account id when someone invites you:
         </p>
-        <p className="mono">{user.id}</p>
+        <div className="copy-row">
+          <p className="mono" style={{ margin: 0 }}>
+            {user.id}
+          </p>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              void navigator.clipboard.writeText(user.id).then(
+                () => setMessage("Account id copied."),
+                () => setMessage("Could not copy the account id."),
+              );
+            }}
+          >
+            Copy id
+          </button>
+        </div>
       </section>
 
       <section className="panel stack">
