@@ -30,12 +30,16 @@ service cloud.firestore {
       return value is string && value.size() <= 500;
     }
 
+    // Web clients store whole numbers as floats; REST/admin may use ints.
+    function numberOk(value) {
+      return (value is int || value is float) && value > 0;
+    }
+
     function memberCreateOk(tableId, uid) {
       return request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'joinedAt'])
         && displayNameOk(request.resource.data.displayName)
         && seatNoteOk(request.resource.data.seatNote)
-        && request.resource.data.joinedAt is int
-        && request.resource.data.joinedAt > 0
+        && numberOk(request.resource.data.joinedAt)
         && request.resource.data.role in ['owner', 'member']
         && (
           (
@@ -67,8 +71,7 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['name', 'ownerId', 'createdAt'])
         && nameOk(request.resource.data.name)
         && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.createdAt is int
-        && request.resource.data.createdAt > 0;
+        && numberOk(request.resource.data.createdAt);
 
       allow update: if isOwner(tableId)
         && request.resource.data.ownerId == resource.data.ownerId

@@ -78,7 +78,7 @@ function friendly(error: unknown): Error {
     "auth/invalid-email": "That email address does not look valid.",
     "auth/weak-password": "Use at least 8 characters.",
     "auth/too-many-requests": "Too many attempts. Wait a minute and try again.",
-    "permission-denied": "You are not allowed to do that at this table.",
+    "permission-denied": "Permission denied by the table rules.",
     "not-found": "That table could not be found.",
   };
   if (code && text[code]) return new Error(text[code]);
@@ -270,10 +270,21 @@ export function createBackend(): Backend {
           role: "owner",
           seatNote: "",
         });
-        const batch = writeBatch(store);
-        batch.set(doc(store, "tables", table.id), tablePayload(table));
-        batch.set(doc(store, "tables", table.id, "members", member.uid), memberPayload(member));
-        await batch.commit();
+        // Write the table first, then the owner member doc. A single batch fails
+        // rules that get() the new table while creating its first member.
+        const tableRef = doc(store, "tables", table.id);
+        const memberRef = doc(store, "tables", table.id, "members", member.uid);
+        await setDoc(tableRef, tablePayload(table));
+        try {
+          await setDoc(memberRef, memberPayload(member));
+        } catch (error) {
+          try {
+            await deleteDoc(tableRef);
+          } catch {
+            // Best-effort cleanup if the owner seat could not be written.
+          }
+          throw error;
+        }
         rememberTableId(user.uid, table.id);
         return table;
       } catch (error) {
