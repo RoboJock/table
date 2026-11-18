@@ -1,6 +1,6 @@
 # Table
 
-A shared table for a small group. The owner sets a seat limit and chooses **Invite only** or **First come, first serve**. People join with a **6-character join code** instead of pasting account ids. The room updates **live** as seats change, shows **who’s here now**, and an **activity feed** records joins, leaves, notices, and settings changes. Members can **export** a JSON copy of the table. Owners can **archive** a table (soft delete) and restore it later, or delete forever. Firestore keeps a local cache so a short disconnect still lets you read and edit; a banner appears until you are back online and synced.
+A shared table for a small group. The owner sets a seat limit and chooses **Invite only** or **First come, first serve**. People join with a **6-character join code** instead of pasting account ids. The room updates **live** as seats change, shows **who’s here now**, keeps a **chat** for people at the table, and an **activity feed** records joins, leaves, notices, and settings changes. Members can **export** a JSON copy of the table. Owners can **archive** a table (soft delete) and restore it later, or delete forever. Firestore keeps a local cache so a short disconnect still lets you read and edit; a banner appears until you are back online and synced.
 
 Members edit only their own seat. Signed-out visitors get nothing.
 
@@ -22,6 +22,7 @@ The Firebase project is `shared-table-b46f`. The public site is [https://shared-
    - `tables/{id}/members/{uid}` → `displayName`, `role`, `seatNote`, `email`, `joinedAt`
    - `tables/{id}/notices/{noticeId}` → `subject`, `body`, `sentBy`, `sentAt`, `to`
    - `tables/{id}/activity/{activityId}` → `type`, `actorId`, `actorName`, `summary`, `createdAt`
+   - `tables/{id}/messages/{messageId}` → `body`, `authorId`, `authorName`, `createdAt`
    - `tables/{id}/presence/{uid}` → `displayName`, `lastSeen` (fresh heartbeats = here now)
    - `tables/{id}/files/{fileId}` → `name`, `ownerId`, `contentType`, `size`, `visibility`, `sharedWith`, `createdAt`
 

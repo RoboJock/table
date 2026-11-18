@@ -4,11 +4,13 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { formatActivityTime } from "../lib/activity";
+import { canDeleteChat } from "../lib/chat";
 import { fileVisibilityLabel, formatFileSize } from "../lib/files";
 import { presenceLabel } from "../lib/presence";
 import { joinPolicyLabel, seatsRemaining } from "../lib/tables";
 import type {
   ActivityDoc,
+  ChatMessage,
   FileDoc,
   FileVisibility,
   JoinPolicy,
@@ -29,6 +31,8 @@ export function TableRoom() {
   const [notices, setNotices] = useState<NoticeDoc[]>([]);
   const [files, setFiles] = useState<FileDoc[]>([]);
   const [activity, setActivity] = useState<ActivityDoc[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatDraft, setChatDraft] = useState("");
   const [presence, setPresence] = useState<PresenceDoc[]>([]);
   const [me, setMe] = useState<MemberDoc | null>(null);
   const [rename, setRename] = useState("");
@@ -57,6 +61,7 @@ export function TableRoom() {
         setNotices([]);
         setFiles([]);
         setActivity([]);
+        setMessages([]);
         setPresence([]);
         setMe(null);
         setLive(false);
@@ -68,6 +73,7 @@ export function TableRoom() {
       setNotices(snapshot.notices);
       setFiles(snapshot.files);
       setActivity(snapshot.activity);
+      setMessages(snapshot.messages);
       setPresence(snapshot.presence);
       setMe(snapshot.me);
       setRename(snapshot.table.name);
@@ -268,6 +274,63 @@ export function TableRoom() {
             ))}
           </ul>
         ) : null}
+      </section>
+
+      <section className="panel stack">
+        <h2>Chat</h2>
+        <p className="muted">Leave a note for everyone at this table.</p>
+        {messages.length === 0 ? (
+          <p className="muted">No messages yet.</p>
+        ) : (
+          <div className="chat-log">
+            {messages.slice(-80).map((message) => (
+              <article className="chat-line" key={message.id}>
+                <header>
+                  <strong>{message.authorName}</strong>
+                  <span className="muted">{formatActivityTime(message.createdAt)}</span>
+                </header>
+                <p>{message.body}</p>
+                {canDeleteChat(me.uid, me.role, message) ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      void run(() => backend.deleteChat(table.id, message.id), "Message removed.");
+                    }}
+                  >
+                    Remove
+                  </button>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        )}
+        <form
+          className="stack"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const draft = chatDraft;
+            void run(async () => {
+              await backend.sendChat(table.id, draft);
+              setChatDraft("");
+            }, "Message sent.");
+          }}
+        >
+          <label>
+            Message
+            <textarea
+              value={chatDraft}
+              onChange={(event) => setChatDraft(event.target.value)}
+              maxLength={500}
+              required
+              placeholder="Running a few minutes late"
+            />
+          </label>
+          <button type="submit" disabled={busy || chatDraft.trim().length === 0}>
+            Send
+          </button>
+        </form>
       </section>
 
       <section className="panel stack">

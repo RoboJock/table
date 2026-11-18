@@ -31,6 +31,7 @@ import {
   type Transaction,
 } from "firebase/firestore";
 import { activityPayload, buildActivity, sortActivity } from "./activity";
+import { buildChatMessage, chatPayload, sortChat } from "./chat";
 import {
   buildTableExport,
   downloadTextFile,
@@ -77,6 +78,7 @@ import type { ConnectionState } from "./offline";
 import type {
   ActivityDoc,
   AppUser,
+  ChatMessage,
   FileDoc,
   FileVisibility,
   JoinCodeDoc,
@@ -100,6 +102,7 @@ export type TableRoomSnapshot = {
   files: FileDoc[];
   activity: ActivityDoc[];
   presence: PresenceDoc[];
+  messages: ChatMessage[];
 };
 
 export type Backend = {
@@ -136,6 +139,8 @@ export type Backend = {
   touchPresence(tableId: string, displayName: string): Promise<void>;
   clearPresence(tableId: string): Promise<void>;
   updateSeat(tableId: string, displayName: string, seatNote: string, email: string): Promise<void>;
+  sendChat(tableId: string, body: string): Promise<ChatMessage>;
+  deleteChat(tableId: string, messageId: string): Promise<void>;
   sendNotice(tableId: string, subject: string, body: string): Promise<SendNoticeResult>;
   uploadFile(
     tableId: string,
@@ -370,6 +375,24 @@ function readPresence(uid: string, data: Record<string, unknown>): PresenceDoc {
   };
 }
 
+function readChat(id: string, data: Record<string, unknown>): ChatMessage {
+  if (
+    typeof data.body !== "string" ||
+    typeof data.authorId !== "string" ||
+    typeof data.authorName !== "string" ||
+    typeof data.createdAt !== "number"
+  ) {
+    throw new Error("That chat message is incomplete.");
+  }
+  return {
+    id,
+    body: data.body,
+    authorId: data.authorId,
+    authorName: data.authorName,
+    createdAt: data.createdAt,
+  };
+}
+
 function readJoinCode(code: string, data: Record<string, unknown>): JoinCodeDoc {
   if (
     typeof data.tableId !== "string" ||
@@ -559,6 +582,13 @@ function notConfiguredBackend(): Backend {
     async updateSeat() {
       missing();
     },
+    async sendChat() {
+      missing();
+      return undefined as never;
+    },
+    async deleteChat() {
+      missing();
+    },
     async sendNotice() {
       missing();
       return undefined as never;
@@ -714,13 +744,15 @@ export function createBackend(): Backend {
         const notices = sortNotices(noticesSnap.docs.map((item) => readNotice(item.id, item.data())));
         const activitySnap = await getDocs(collection(store, "tables", id, "activity"));
         const activity = sortActivity(activitySnap.docs.map((item) => readActivity(item.id, item.data())));
+        const messagesSnap = await getDocs(collection(store, "tables", id, "messages"));
+        const messages = sortChat(messagesSnap.docs.map((item) => readChat(item.id, item.data())));
         const presenceSnap = await getDocs(collection(store, "tables", id, "presence"));
         const presence = filterPresent(
           presenceSnap.docs.map((item) => readPresence(item.id, item.data())),
         );
         const files = await listAccessibleFiles(store, id, user.uid);
         rememberTableId(user.uid, id);
-        return { table, members, me, notices, files, activity, presence };
+        return { table, members, me, notices, files, activity, presence, messages };
       } catch (error) {
         throw friendly(error);
       }
@@ -739,6 +771,7 @@ export function createBackend(): Backend {
         let members: MemberDoc[] = [];
         let notices: NoticeDoc[] = [];
         let activity: ActivityDoc[] = [];
+        let messages: ChatMessage[] = [];
         let presence: PresenceDoc[] = [];
         let files: FileDoc[] = [];
         let readyFlags = {
@@ -746,6 +779,7 @@ export function createBackend(): Backend {
           members: false,
           notices: false,
           activity: false,
+          messages: false,
           presence: false,
           files: false,
         };
@@ -758,6 +792,7 @@ export function createBackend(): Backend {
             !readyFlags.members ||
             !readyFlags.notices ||
             !readyFlags.activity ||
+            !readyFlags.messages ||
             !readyFlags.presence ||
             !readyFlags.files
           ) {
@@ -774,7 +809,16 @@ export function createBackend(): Backend {
           }
           presenceName = me.displayName;
           rememberTableId(user.uid, id);
-          listener({ table, members, me, notices, files, activity, presence: filterPresent(presence) });
+          listener({
+            table,
+            members,
+            me,
+            notices,
+            files,
+            activity,
+            presence: filterPresent(presence),
+            messages,
+          });
         };
 
         const beat = () => {
@@ -829,6 +873,15 @@ export function createBackend(): Backend {
             (snap) => {
               readyFlags.activity = true;
               activity = sortActivity(snap.docs.map((item) => readActivity(item.id, item.data())));
+              publish();
+            },
+            (error) => listener(null, friendly(error)),
+          ),
+          onSnapshot(
+            collection(store, "tables", id, "messages"),
+            (snap) => {
+              readyFlags.messages = true;
+              messages = sortChat(snap.docs.map((item) => readChat(item.id, item.data())));
               publish();
             },
             (error) => listener(null, friendly(error)),
@@ -1072,6 +1125,7 @@ export function createBackend(): Backend {
           notices: opened.notices,
           activity: opened.activity,
           files: opened.files,
+          messages: opened.messages,
           exportedAt,
         });
         const filename = tableExportFilename(opened.table, exportedAt);
@@ -1090,6 +1144,7 @@ export function createBackend(): Backend {
           throw new Error("Only the owner can delete this table.");
         }
         const activitySnap = await getDocs(collection(store, "tables", opened.table.id, "activity"));
+        const messagesSnap = await getDocs(collection(store, "tables", opened.table.id, "messages"));
         const presenceSnap = await getDocs(collection(store, "tables", opened.table.id, "presence"));
         const batch = writeBatch(store);
         for (const uid of memberUids) {
@@ -1099,6 +1154,9 @@ export function createBackend(): Backend {
           batch.delete(doc(store, "tables", opened.table.id, "notices", noticeId));
         }
         for (const item of activitySnap.docs) {
+          batch.delete(item.ref);
+        }
+        for (const item of messagesSnap.docs) {
           batch.delete(item.ref);
         }
         for (const item of presenceSnap.docs) {
@@ -1319,6 +1377,40 @@ export function createBackend(): Backend {
         } catch {
           // Keep seat save even if presence refresh fails.
         }
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async sendChat(tableId, body) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const opened = await this.openTable(tableId);
+        const message = buildChatMessage({
+          body,
+          authorId: user.uid,
+          authorName: opened.me.displayName,
+        });
+        await setDoc(
+          doc(store, "tables", opened.table.id, "messages", message.id),
+          chatPayload(message),
+        );
+        return message;
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async deleteChat(tableId, messageId) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const opened = await this.openTable(tableId);
+        const message = opened.messages.find((item) => item.id === messageId.trim());
+        if (!message) throw new Error("That message could not be found.");
+        if (message.authorId !== user.uid && opened.me.role !== "owner") {
+          throw new Error("Only the author or the owner can remove that message.");
+        }
+        await deleteDoc(doc(store, "tables", opened.table.id, "messages", message.id));
       } catch (error) {
         throw friendly(error);
       }

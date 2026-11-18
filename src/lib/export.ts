@@ -1,4 +1,4 @@
-import type { ActivityDoc, FileDoc, MemberDoc, NoticeDoc, TableDoc } from "./types";
+import type { ActivityDoc, ChatMessage, FileDoc, MemberDoc, NoticeDoc, TableDoc } from "./types";
 import { joinPolicyLabel } from "./tables";
 
 export type TableExportPayload = {
@@ -37,6 +37,13 @@ export type TableExportPayload = {
     summary: string;
     createdAt: number;
   }>;
+  messages: Array<{
+    id: string;
+    body: string;
+    authorId: string;
+    authorName: string;
+    createdAt: number;
+  }>;
   files: Array<{
     id: string;
     name: string;
@@ -55,6 +62,7 @@ export function buildTableExport(input: {
   notices: NoticeDoc[];
   activity: ActivityDoc[];
   files: FileDoc[];
+  messages?: ChatMessage[];
   exportedAt?: number;
 }): TableExportPayload {
   return {
@@ -92,6 +100,13 @@ export function buildTableExport(input: {
       actorName: item.actorName,
       summary: item.summary,
       createdAt: item.createdAt,
+    })),
+    messages: (input.messages ?? []).map((message) => ({
+      id: message.id,
+      body: message.body,
+      authorId: message.authorId,
+      authorName: message.authorName,
+      createdAt: message.createdAt,
     })),
     files: input.files.map((file) => ({
       id: file.id,

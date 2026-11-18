@@ -404,6 +404,33 @@ label.choice .muted {
   font-size: 0.98rem;
 }
 
+.chat-log {
+  display: grid;
+  gap: 0.75rem;
+  max-height: 22rem;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.chat-line {
+  display: grid;
+  gap: 0.25rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.chat-line header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.chat-line p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 .activity-list {
   list-style: none;
   margin: 0;

@@ -78,6 +78,14 @@ export type ActivityDoc = {
   createdAt: number;
 };
 
+export type ChatMessage = {
+  id: string;
+  body: string;
+  authorId: string;
+  authorName: string;
+  createdAt: number;
+};
+
 /** Public peek fields stored under joinCodes/{code}. */
 export type JoinCodeDoc = {
   code: string;
