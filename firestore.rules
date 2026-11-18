@@ -99,10 +99,13 @@ service cloud.firestore {
             && get(/databases/$(database)/documents/tables/$(tableId)).data.ownerId == request.auth.uid
           )
           || (
-            // Join by code (both policies): claim your own member seat on active tables.
+            // Join by code (both policies): claim your own member seat on an active table
+            // that still has room. get() sees the count before this write.
             uid == request.auth.uid
             && request.resource.data.role == 'member'
             && tableIsActive(tableId)
+            && get(/databases/$(database)/documents/tables/$(tableId)).data.memberCount
+              < get(/databases/$(database)/documents/tables/$(tableId)).data.seatLimit
           )
         );
     }

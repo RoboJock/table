@@ -64,8 +64,8 @@ export default {
           ? 401
           : message.startsWith("Only table members") || message.includes("cannot open")
             ? 403
-            : message.includes("email for reminders")
-              ? 409
+          : message.includes("email for reminders") || message.includes("muted notices")
+            ? 409
               : message.includes("could not be found")
                 ? 404
                 : message.includes("5 MB") ||
