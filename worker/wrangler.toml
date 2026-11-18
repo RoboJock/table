@@ -1,6 +1,7 @@
 name = "table-notice"
 main = "src/index.ts"
 compatibility_date = "2024-11-01"
+account_id = "d8e469cf6f0c4cb4912aa00235620ba2"
 
 # Set with:
 #   npx wrangler secret put RESEND_API_KEY
