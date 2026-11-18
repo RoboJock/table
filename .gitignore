@@ -11,3 +11,6 @@ tsconfig.tsbuildinfo
 functions/lib
 functions/.env
 functions/.env.local
+worker/.env
+worker/.env.local
+worker/.wrangler

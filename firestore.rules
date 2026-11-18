@@ -72,6 +72,25 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'email', 'joinedAt']);
     }
 
+    function noticeSubjectOk(value) {
+      return value is string && value.size() >= 1 && value.size() <= 120;
+    }
+
+    function noticeBodyOk(value) {
+      return value is string && value.size() >= 1 && value.size() <= 2000;
+    }
+
+    function noticeCreateOk() {
+      return request.resource.data.keys().hasOnly(['subject', 'body', 'sentBy', 'sentAt', 'to'])
+        && request.resource.data.sentBy == request.auth.uid
+        && noticeSubjectOk(request.resource.data.subject)
+        && noticeBodyOk(request.resource.data.body)
+        && numberOk(request.resource.data.sentAt)
+        && request.resource.data.to is list
+        && request.resource.data.to.size() >= 1
+        && request.resource.data.to.size() <= 40;
+    }
+
     match /tables/{tableId} {
       // OwnerId equality lets "tables I own" queries pass rule checks.
       // Membership still covers invited members opening a table by id.
@@ -103,11 +122,12 @@ service cloud.firestore {
           || (signedIn() && request.auth.uid == uid);
       }
 
-      // Notice log is created only by the Cloud Function (Admin SDK).
-      // Owners may delete notices when tearing down a table.
+      // Notice log: members may create a log entry after the Worker sends mail.
+      // Clients still cannot update notices. Email sending stays on the Worker.
       match /notices/{noticeId} {
         allow read: if isMember(tableId);
-        allow create, update: if false;
+        allow create: if isMember(tableId) && noticeCreateOk();
+        allow update: if false;
         allow delete: if isOwner(tableId);
       }
     }

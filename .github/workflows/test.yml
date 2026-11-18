@@ -16,5 +16,5 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - run: npm --prefix functions ci
-      - run: npm run test:functions
+      - run: npm --prefix worker ci
+      - run: npm run test:worker

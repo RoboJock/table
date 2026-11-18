@@ -1,0 +1,10 @@
+name = "table-notice"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# Set with:
+#   npx wrangler secret put RESEND_API_KEY
+#   npx wrangler secret put RESEND_FROM
+# FIREBASE_PROJECT_ID can stay as a plain var (public).
+[vars]
+FIREBASE_PROJECT_ID = "shared-table-b46f"

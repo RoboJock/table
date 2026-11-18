@@ -23,7 +23,6 @@ import {
   writeBatch,
   type Firestore,
 } from "firebase/firestore";
-import { getFunctions, httpsCallable, type Functions } from "firebase/functions";
 import {
   buildMember,
   buildTable,
@@ -85,8 +84,6 @@ export function firebasePublicConfig(): Record<string, string> | null {
 
 function friendly(error: unknown): Error {
   const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
-  const message =
-    typeof error === "object" && error && "message" in error ? String((error as { message: unknown }).message) : "";
   const text: Record<string, string> = {
     "auth/operation-not-allowed": "Email sign-in is turned off in the Firebase console.",
     "auth/email-already-in-use": "That email already has an account. Sign in instead.",
@@ -96,24 +93,19 @@ function friendly(error: unknown): Error {
     "auth/too-many-requests": "Too many attempts. Wait a minute and try again.",
     "permission-denied": "Permission denied by the table rules.",
     "not-found": "That table could not be found.",
-    "functions/unauthenticated": "Sign in first.",
-    "functions/permission-denied": "Only table members can send a notice.",
-    "functions/failed-precondition":
-      message || "No one at this table has an email for reminders yet. Add one on your seat first.",
-    "functions/invalid-argument": message || "That notice could not be sent.",
-    "functions/internal": message || "The notice server failed. Try again in a moment.",
-    "functions/unavailable": "The notice server is not deployed yet.",
-    "functions/not-found": "The notice server is not deployed yet.",
   };
   if (code && text[code]) return new Error(text[code]);
   if (error instanceof Error && error.message) return error;
   return new Error("Something went wrong. Try again.");
 }
 
+function noticeWorkerUrl(): string {
+  return (process.env.NEXT_PUBLIC_NOTICE_WORKER_URL ?? "").trim().replace(/\/$/, "");
+}
+
 let firebaseApp: FirebaseApp | undefined;
 let auth: Auth | undefined;
 let db: Firestore | undefined;
-let functions: Functions | undefined;
 
 function services() {
   const config = firebasePublicConfig();
@@ -121,8 +113,7 @@ function services() {
   firebaseApp ??= initializeApp(config);
   auth ??= getAuth(firebaseApp);
   db ??= getFirestore(firebaseApp);
-  functions ??= getFunctions(firebaseApp);
-  return { auth, db, functions };
+  return { auth, db };
 }
 
 function requireUser() {
@@ -457,14 +448,43 @@ export function createBackend(): Backend {
     },
     async sendNotice(tableId, subject, body) {
       try {
-        requireUser();
-        const { functions: fns } = services();
-        const callable = httpsCallable<{ tableId: string; subject: string; body: string }, SendNoticeResult>(
-          fns,
-          "sendNotice",
-        );
-        const result = await callable({ tableId: tableId.trim(), subject, body });
-        return result.data;
+        const user = requireUser();
+        const base = noticeWorkerUrl();
+        if (!base) {
+          throw new Error("Notice sending is not configured yet.");
+        }
+        const token = await user.getIdToken();
+        const response = await fetch(`${base}/sendNotice`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            tableId: tableId.trim(),
+            subject,
+            body,
+          }),
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          noticeId?: unknown;
+          recipientCount?: unknown;
+          error?: unknown;
+        };
+        if (!response.ok) {
+          throw new Error(
+            typeof payload.error === "string" && payload.error
+              ? payload.error
+              : "That notice could not be sent.",
+          );
+        }
+        if (typeof payload.noticeId !== "string" || typeof payload.recipientCount !== "number") {
+          throw new Error("The notice server returned an incomplete response.");
+        }
+        return {
+          noticeId: payload.noticeId,
+          recipientCount: payload.recipientCount,
+        };
       } catch (error) {
         throw friendly(error);
       }
