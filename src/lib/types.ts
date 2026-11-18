@@ -33,6 +33,8 @@ export type MemberDoc = {
   seatNote: string;
   /** Inbox address for table notices. Empty until the member saves one. */
   email: string;
+  /** When true, this seat keeps the email but skips notice emails for this table. */
+  noticesMuted: boolean;
   joinedAt: number;
 };
 

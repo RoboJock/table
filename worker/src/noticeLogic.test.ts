@@ -16,6 +16,7 @@ describe("noticeLogic", () => {
         { uid: "2", email: "ada@example.com" },
         { uid: "3", email: "" },
         { uid: "4", email: "bea@example.com" },
+        { uid: "5", email: "cara@example.com", noticesMuted: true },
       ]),
       ["ada@example.com", "bea@example.com"],
     );

@@ -63,6 +63,7 @@ describe("table helpers", () => {
       role: "owner",
       seatNote: "DM",
       email: "ada@example.com",
+      noticesMuted: false,
       joinedAt: 11,
     });
   });

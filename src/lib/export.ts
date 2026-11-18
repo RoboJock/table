@@ -20,6 +20,7 @@ export type TableExportPayload = {
     role: string;
     seatNote: string;
     email: string;
+    noticesMuted: boolean;
     joinedAt: number;
   }>;
   notices: Array<{
@@ -84,6 +85,7 @@ export function buildTableExport(input: {
       role: member.role,
       seatNote: member.seatNote,
       email: member.email,
+      noticesMuted: member.noticesMuted,
       joinedAt: member.joinedAt,
     })),
     notices: input.notices.map((notice) => ({

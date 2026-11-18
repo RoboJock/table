@@ -4,7 +4,7 @@ A shared table for a small group. The owner sets a seat limit and chooses **Invi
 
 Members edit only their own seat. Signed-out visitors get nothing.
 
-Members can also send a short **notice email** to everyone who saved a reminder email. The browser calls a Cloudflare Worker; the Resend API key stays in Worker secrets.
+Members can also send a short **notice email** to everyone who saved a reminder email and has not muted notices for that table. The browser calls a Cloudflare Worker; the Resend API key stays in Worker secrets.
 
 Members can upload **files** (images or PDFs, max 5 MB) when Cloudflare R2 is enabled (backlog if billing is required). Metadata and visibility rules already live in Firestore.
 

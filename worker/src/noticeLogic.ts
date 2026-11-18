@@ -2,6 +2,7 @@ export type MemberEmailRow = {
   uid: string;
   email?: string | null;
   displayName?: string | null;
+  noticesMuted?: boolean;
 };
 
 export function cleanEmail(email: string): string {
@@ -36,6 +37,7 @@ export function collectRecipientEmails(members: MemberEmailRow[]): string[] {
   const seen = new Set<string>();
   const list: string[] = [];
   for (const member of members) {
+    if (member.noticesMuted) continue;
     const address = cleanEmail(typeof member.email === "string" ? member.email : "");
     if (!address || seen.has(address)) continue;
     seen.add(address);

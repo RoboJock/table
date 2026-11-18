@@ -191,6 +191,7 @@ export function buildMember(input: {
   role: MemberRole;
   seatNote?: string;
   email?: string;
+  noticesMuted?: boolean;
   joinedAt?: number;
 }): MemberDoc {
   return {
@@ -199,6 +200,7 @@ export function buildMember(input: {
     role: input.role,
     seatNote: cleanSeatNote(input.seatNote ?? ""),
     email: cleanEmail(input.email ?? ""),
+    noticesMuted: input.noticesMuted === true,
     joinedAt: input.joinedAt ?? Date.now(),
   };
 }
@@ -255,6 +257,7 @@ export function memberPayload(member: MemberDoc): Omit<MemberDoc, "uid"> {
     role: member.role,
     seatNote: member.seatNote,
     email: member.email,
+    noticesMuted: member.noticesMuted,
     joinedAt: member.joinedAt,
   };
 }
@@ -285,6 +288,7 @@ export function memberEmailsForNotice(members: MemberDoc[]): string[] {
   const seen = new Set<string>();
   const list: string[] = [];
   for (const member of members) {
+    if (member.noticesMuted) continue;
     const address = cleanEmail(member.email || "");
     if (!address || seen.has(address)) continue;
     seen.add(address);

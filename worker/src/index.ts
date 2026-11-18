@@ -125,7 +125,12 @@ async function handleSendNotice(request: Request, env: Env): Promise<Response> {
 
   const recipients = collectRecipientEmails(members);
   if (recipients.length === 0) {
-    throw new Error("No one at this table has an email for reminders yet. Add one on your seat first.");
+    const someoneMuted = members.some((member) => member.noticesMuted && (member.email || "").trim());
+    throw new Error(
+      someoneMuted
+        ? "Everyone with a reminder email has muted notices for this table."
+        : "No one at this table has an email for reminders yet. Add one on your seat first.",
+    );
   }
 
   const tableName = stringField(table, "name") || "Table";
@@ -300,6 +305,7 @@ async function firestoreListMembers(
       uid,
       email: stringField(doc.fields ?? {}, "email"),
       displayName: stringField(doc.fields ?? {}, "displayName"),
+      noticesMuted: booleanField(doc.fields ?? {}, "noticesMuted"),
     };
   });
 }
@@ -336,6 +342,12 @@ async function firestoreCreateNotice(
     const text = await response.text();
     throw new Error(`Notice was emailed, but the log could not be saved. ${text.slice(0, 180)}`);
   }
+}
+
+function booleanField(fields: Record<string, unknown>, key: string): boolean {
+  const value = fields[key];
+  if (!value || typeof value !== "object") return false;
+  return (value as { booleanValue?: unknown }).booleanValue === true;
 }
 
 function stringField(fields: Record<string, unknown>, key: string): string {

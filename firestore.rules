@@ -85,10 +85,11 @@ service cloud.firestore {
     }
 
     function memberCreateOk(tableId, uid) {
-      return request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'email', 'joinedAt'])
+      return request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'email', 'noticesMuted', 'joinedAt'])
         && displayNameOk(request.resource.data.displayName)
         && seatNoteOk(request.resource.data.seatNote)
         && emailOk(request.resource.data.email)
+        && request.resource.data.noticesMuted is bool
         && numberOk(request.resource.data.joinedAt)
         && request.resource.data.role in ['owner', 'member']
         && (
@@ -113,7 +114,8 @@ service cloud.firestore {
         && displayNameOk(request.resource.data.displayName)
         && seatNoteOk(request.resource.data.seatNote)
         && emailOk(request.resource.data.email)
-        && request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'email', 'joinedAt']);
+        && request.resource.data.noticesMuted is bool
+        && request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'email', 'noticesMuted', 'joinedAt']);
     }
 
     function noticeSubjectOk(value) {

@@ -138,7 +138,13 @@ export type Backend = {
   leaveTable(tableId: string): Promise<void>;
   touchPresence(tableId: string, displayName: string): Promise<void>;
   clearPresence(tableId: string): Promise<void>;
-  updateSeat(tableId: string, displayName: string, seatNote: string, email: string): Promise<void>;
+  updateSeat(
+    tableId: string,
+    displayName: string,
+    seatNote: string,
+    email: string,
+    noticesMuted: boolean,
+  ): Promise<void>;
   sendChat(tableId: string, body: string): Promise<ChatMessage>;
   deleteChat(tableId: string, messageId: string): Promise<void>;
   sendNotice(tableId: string, subject: string, body: string): Promise<SendNoticeResult>;
@@ -284,6 +290,7 @@ function readMember(uid: string, data: Record<string, unknown>): MemberDoc {
     role: data.role,
     seatNote: typeof data.seatNote === "string" ? data.seatNote : "",
     email: typeof data.email === "string" ? data.email : "",
+    noticesMuted: data.noticesMuted === true,
     joinedAt: data.joinedAt,
   };
 }
@@ -1356,7 +1363,7 @@ export function createBackend(): Backend {
         throw friendly(error);
       }
     },
-    async updateSeat(tableId, displayName, seatNote, email) {
+    async updateSeat(tableId, displayName, seatNote, email, noticesMuted) {
       try {
         const user = requireUser();
         const { db: store } = services();
@@ -1367,6 +1374,7 @@ export function createBackend(): Backend {
           role: opened.me.role,
           seatNote: cleanSeatNote(seatNote),
           email: cleanEmail(email),
+          noticesMuted: noticesMuted === true,
           joinedAt: opened.me.joinedAt,
         });
         try {

@@ -41,6 +41,7 @@ export function TableRoom() {
   const [displayName, setDisplayName] = useState("");
   const [seatNote, setSeatNote] = useState("");
   const [email, setEmail] = useState("");
+  const [noticesMuted, setNoticesMuted] = useState(false);
   const [noticeSubject, setNoticeSubject] = useState("");
   const [noticeBody, setNoticeBody] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -82,6 +83,7 @@ export function TableRoom() {
       setDisplayName(snapshot.me.displayName);
       setSeatNote(snapshot.me.seatNote);
       setEmail(snapshot.me.email || user.email || "");
+      setNoticesMuted(snapshot.me.noticesMuted);
       setLive(true);
     });
     return () => {
@@ -137,7 +139,7 @@ export function TableRoom() {
     }
   }
 
-  const recipientReady = members.filter((member) => member.email.trim()).length;
+  const recipientReady = members.filter((member) => member.email.trim() && !member.noticesMuted).length;
 
   return (
     <div className="stack">
@@ -357,7 +359,7 @@ export function TableRoom() {
           onSubmit={(event) => {
             event.preventDefault();
             void run(
-              () => backend.updateSeat(table.id, displayName, seatNote, email),
+              () => backend.updateSeat(table.id, displayName, seatNote, email, noticesMuted),
               "Seat saved.",
             );
           }}
@@ -388,6 +390,17 @@ export function TableRoom() {
               onChange={(event) => setEmail(event.target.value)}
               placeholder="you@example.com"
             />
+          </label>
+          <label className="choice">
+            <input
+              type="checkbox"
+              checked={noticesMuted}
+              onChange={(event) => setNoticesMuted(event.target.checked)}
+            />
+            <span>
+              <strong>Mute reminders for this table</strong>
+              <span className="muted"> Your email stays saved. You just will not get notice emails here.</span>
+            </span>
           </label>
           <button type="submit" disabled={busy}>
             Save seat
@@ -694,7 +707,13 @@ export function TableRoom() {
                 <span className={`pill ${member.role}`}>{member.role}</span>
               </header>
               <p className="muted">{member.seatNote || "No seat note yet."}</p>
-              <p className="muted">{member.email ? "Gets email reminders" : "No reminder email yet"}</p>
+              <p className="muted">
+                {!member.email
+                  ? "No reminder email yet"
+                  : member.noticesMuted
+                    ? "Reminders muted"
+                    : "Gets email reminders"}
+              </p>
               {me.role === "owner" && member.role !== "owner" ? (
                 <button
                   type="button"
