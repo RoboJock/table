@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { formatActivityTime } from "../lib/activity";
 import { fileVisibilityLabel, formatFileSize } from "../lib/files";
+import { presenceLabel } from "../lib/presence";
 import { joinPolicyLabel, seatsRemaining } from "../lib/tables";
 import type {
   ActivityDoc,
@@ -13,6 +14,7 @@ import type {
   JoinPolicy,
   MemberDoc,
   NoticeDoc,
+  PresenceDoc,
   TableDoc,
 } from "../lib/types";
 import { useTableApp } from "./AppShell";
@@ -27,6 +29,7 @@ export function TableRoom() {
   const [notices, setNotices] = useState<NoticeDoc[]>([]);
   const [files, setFiles] = useState<FileDoc[]>([]);
   const [activity, setActivity] = useState<ActivityDoc[]>([]);
+  const [presence, setPresence] = useState<PresenceDoc[]>([]);
   const [me, setMe] = useState<MemberDoc | null>(null);
   const [rename, setRename] = useState("");
   const [seatLimit, setSeatLimit] = useState("4");
@@ -54,6 +57,7 @@ export function TableRoom() {
         setNotices([]);
         setFiles([]);
         setActivity([]);
+        setPresence([]);
         setMe(null);
         setLive(false);
         setMessage(error?.message || "Could not open this table.");
@@ -64,6 +68,7 @@ export function TableRoom() {
       setNotices(snapshot.notices);
       setFiles(snapshot.files);
       setActivity(snapshot.activity);
+      setPresence(snapshot.presence);
       setMe(snapshot.me);
       setRename(snapshot.table.name);
       setSeatLimit(String(snapshot.table.seatLimit));
@@ -242,6 +247,21 @@ export function TableRoom() {
               : "Open seats go to whoever enters the join code first."}
           </p>
         )}
+      </section>
+
+      <section className="panel stack">
+        <h2>Here now</h2>
+        <p className="muted">{presenceLabel(presence.length)}</p>
+        {presence.length > 0 ? (
+          <ul className="presence-list">
+            {presence.map((person) => (
+              <li key={person.uid}>
+                <span>{person.displayName}</span>
+                {person.uid === me.uid ? <span className="muted">you</span> : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
       <section className="panel stack">

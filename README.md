@@ -1,6 +1,6 @@
 # Table
 
-A shared table for a small group. The owner sets a seat limit and chooses **Invite only** or **First come, first serve**. People join with a **6-character join code** instead of pasting account ids. The room updates **live** as seats change, and an **activity feed** records joins, leaves, notices, and settings changes.
+A shared table for a small group. The owner sets a seat limit and chooses **Invite only** or **First come, first serve**. People join with a **6-character join code** instead of pasting account ids. The room updates **live** as seats change, shows **who’s here now**, and an **activity feed** records joins, leaves, notices, and settings changes.
 
 Members edit only their own seat. Signed-out visitors get nothing.
 
@@ -22,6 +22,7 @@ The Firebase project is `shared-table-b46f`. The public site is [https://shared-
    - `tables/{id}/members/{uid}` → `displayName`, `role`, `seatNote`, `email`, `joinedAt`
    - `tables/{id}/notices/{noticeId}` → `subject`, `body`, `sentBy`, `sentAt`, `to`
    - `tables/{id}/activity/{activityId}` → `type`, `actorId`, `actorName`, `summary`, `createdAt`
+   - `tables/{id}/presence/{uid}` → `displayName`, `lastSeen` (fresh heartbeats = here now)
    - `tables/{id}/files/{fileId}` → `name`, `ownerId`, `contentType`, `size`, `visibility`, `sharedWith`, `createdAt`
 
 3. Roles: owner, member, signed-in stranger, signed-out visitor

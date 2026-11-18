@@ -82,3 +82,10 @@ export type JoinCodeDoc = {
   joinPolicy: JoinPolicy;
   ownerId: string;
 };
+
+/** Who currently has this table open. Stale rows age out client-side. */
+export type PresenceDoc = {
+  uid: string;
+  displayName: string;
+  lastSeen: number;
+};

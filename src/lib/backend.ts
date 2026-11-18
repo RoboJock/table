@@ -37,6 +37,12 @@ import {
   sortFiles,
 } from "./files";
 import {
+  buildPresence,
+  filterPresent,
+  PRESENCE_HEARTBEAT_MS,
+  presencePayload,
+} from "./presence";
+import {
   buildMember,
   buildTable,
   cleanDisplayName,
@@ -66,6 +72,7 @@ import type {
   JoinPolicy,
   MemberDoc,
   NoticeDoc,
+  PresenceDoc,
   TableDoc,
 } from "./types";
 
@@ -81,6 +88,7 @@ export type TableRoomSnapshot = {
   notices: NoticeDoc[];
   files: FileDoc[];
   activity: ActivityDoc[];
+  presence: PresenceDoc[];
 };
 
 export type Backend = {
@@ -110,6 +118,8 @@ export type Backend = {
   joinTable(tableId: string): Promise<MemberDoc>;
   removeMember(tableId: string, uid: string): Promise<void>;
   leaveTable(tableId: string): Promise<void>;
+  touchPresence(tableId: string, displayName: string): Promise<void>;
+  clearPresence(tableId: string): Promise<void>;
   updateSeat(tableId: string, displayName: string, seatNote: string, email: string): Promise<void>;
   sendNotice(tableId: string, subject: string, body: string): Promise<SendNoticeResult>;
   uploadFile(
@@ -313,6 +323,17 @@ function readActivity(id: string, data: Record<string, unknown>): ActivityDoc {
   };
 }
 
+function readPresence(uid: string, data: Record<string, unknown>): PresenceDoc {
+  if (typeof data.displayName !== "string" || typeof data.lastSeen !== "number") {
+    throw new Error("That presence document is incomplete.");
+  }
+  return {
+    uid,
+    displayName: data.displayName,
+    lastSeen: data.lastSeen,
+  };
+}
+
 function readJoinCode(code: string, data: Record<string, unknown>): JoinCodeDoc {
   if (
     typeof data.tableId !== "string" ||
@@ -463,6 +484,12 @@ function notConfiguredBackend(): Backend {
     async leaveTable() {
       missing();
     },
+    async touchPresence() {
+      missing();
+    },
+    async clearPresence() {
+      missing();
+    },
     async updateSeat() {
       missing();
     },
@@ -586,9 +613,13 @@ export function createBackend(): Backend {
         const notices = sortNotices(noticesSnap.docs.map((item) => readNotice(item.id, item.data())));
         const activitySnap = await getDocs(collection(store, "tables", id, "activity"));
         const activity = sortActivity(activitySnap.docs.map((item) => readActivity(item.id, item.data())));
+        const presenceSnap = await getDocs(collection(store, "tables", id, "presence"));
+        const presence = filterPresent(
+          presenceSnap.docs.map((item) => readPresence(item.id, item.data())),
+        );
         const files = await listAccessibleFiles(store, id, user.uid);
         rememberTableId(user.uid, id);
-        return { table, members, me, notices, files, activity };
+        return { table, members, me, notices, files, activity, presence };
       } catch (error) {
         throw friendly(error);
       }
@@ -607,11 +638,28 @@ export function createBackend(): Backend {
         let members: MemberDoc[] = [];
         let notices: NoticeDoc[] = [];
         let activity: ActivityDoc[] = [];
+        let presence: PresenceDoc[] = [];
         let files: FileDoc[] = [];
-        let readyFlags = { table: false, members: false, notices: false, activity: false, files: false };
+        let readyFlags = {
+          table: false,
+          members: false,
+          notices: false,
+          activity: false,
+          presence: false,
+          files: false,
+        };
+        let heartbeatTimer: number | undefined;
+        let presenceName = user.displayName?.trim() || "Member";
 
         const publish = () => {
-          if (!readyFlags.table || !readyFlags.members || !readyFlags.notices || !readyFlags.activity || !readyFlags.files) {
+          if (
+            !readyFlags.table ||
+            !readyFlags.members ||
+            !readyFlags.notices ||
+            !readyFlags.activity ||
+            !readyFlags.presence ||
+            !readyFlags.files
+          ) {
             return;
           }
           if (!table) {
@@ -623,8 +671,18 @@ export function createBackend(): Backend {
             listener(null, new Error("You are not a member of this table."));
             return;
           }
+          presenceName = me.displayName;
           rememberTableId(user.uid, id);
-          listener({ table, members, me, notices, files, activity });
+          listener({ table, members, me, notices, files, activity, presence: filterPresent(presence) });
+        };
+
+        const beat = () => {
+          void setDoc(
+            doc(store, "tables", id, "presence", user.uid),
+            presencePayload(buildPresence({ uid: user.uid, displayName: presenceName })),
+          ).catch(() => {
+            // Presence is best-effort; room still works if a beat fails.
+          });
         };
 
         const unsubs = [
@@ -674,6 +732,15 @@ export function createBackend(): Backend {
             },
             (error) => listener(null, friendly(error)),
           ),
+          onSnapshot(
+            collection(store, "tables", id, "presence"),
+            (snap) => {
+              readyFlags.presence = true;
+              presence = snap.docs.map((item) => readPresence(item.id, item.data()));
+              publish();
+            },
+            (error) => listener(null, friendly(error)),
+          ),
         ];
 
         const refreshFiles = () => {
@@ -687,10 +754,21 @@ export function createBackend(): Backend {
         };
         refreshFiles();
         const filesTimer = window.setInterval(refreshFiles, 15_000);
+        beat();
+        heartbeatTimer = window.setInterval(beat, PRESENCE_HEARTBEAT_MS);
+        // Re-filter stale heartbeats even when Firestore has no new writes.
+        const staleTimer = window.setInterval(() => {
+          if (readyFlags.presence) publish();
+        }, 10_000);
 
         return () => {
           for (const unsub of unsubs) unsub();
           window.clearInterval(filesTimer);
+          window.clearInterval(staleTimer);
+          if (heartbeatTimer !== undefined) window.clearInterval(heartbeatTimer);
+          void deleteDoc(doc(store, "tables", id, "presence", user.uid)).catch(() => {
+            // Leaving the page should not surface presence cleanup errors.
+          });
         };
       } catch (error) {
         listener(null, friendly(error));
@@ -828,6 +906,7 @@ export function createBackend(): Backend {
           throw new Error("Only the owner can delete this table.");
         }
         const activitySnap = await getDocs(collection(store, "tables", opened.table.id, "activity"));
+        const presenceSnap = await getDocs(collection(store, "tables", opened.table.id, "presence"));
         const batch = writeBatch(store);
         for (const uid of memberUids) {
           batch.delete(doc(store, "tables", opened.table.id, "members", uid));
@@ -836,6 +915,9 @@ export function createBackend(): Backend {
           batch.delete(doc(store, "tables", opened.table.id, "notices", noticeId));
         }
         for (const item of activitySnap.docs) {
+          batch.delete(item.ref);
+        }
+        for (const item of presenceSnap.docs) {
           batch.delete(item.ref);
         }
         if (opened.table.joinCode) {
@@ -929,6 +1011,11 @@ export function createBackend(): Backend {
             summary: `${opened.me.displayName} removed ${targetMember?.displayName ?? "a member"}.`,
           }),
         );
+        try {
+          await deleteDoc(doc(store, "tables", opened.table.id, "presence", target));
+        } catch {
+          // Presence may already be gone.
+        }
         await runTransaction(store, async (tx) => {
           const tableRef = doc(store, "tables", tableId.trim());
           const tableSnap = await tx.get(tableRef);
@@ -970,6 +1057,11 @@ export function createBackend(): Backend {
             summary: `${opened.me.displayName} left the table.`,
           }),
         );
+        try {
+          await deleteDoc(doc(store, "tables", opened.table.id, "presence", user.uid));
+        } catch {
+          // Presence cleanup is best-effort before the seat is removed.
+        }
         await runTransaction(store, async (tx) => {
           const tableRef = doc(store, "tables", tableId.trim());
           const tableSnap = await tx.get(tableRef);
@@ -992,18 +1084,54 @@ export function createBackend(): Backend {
         throw friendly(error);
       }
     },
+    async touchPresence(tableId, displayName) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const id = tableId.trim();
+        if (!id) throw new Error("Choose a table id.");
+        await setDoc(
+          doc(store, "tables", id, "presence", user.uid),
+          presencePayload(buildPresence({ uid: user.uid, displayName })),
+        );
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async clearPresence(tableId) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const id = tableId.trim();
+        if (!id) throw new Error("Choose a table id.");
+        await deleteDoc(doc(store, "tables", id, "presence", user.uid));
+      } catch (error) {
+        const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+        if (code === "not-found") return;
+        throw friendly(error);
+      }
+    },
     async updateSeat(tableId, displayName, seatNote, email) {
       try {
         const user = requireUser();
         const { db: store } = services();
         const opened = await this.openTable(tableId);
+        const nextName = cleanDisplayName(displayName);
         await updateDoc(doc(store, "tables", opened.table.id, "members", user.uid), {
-          displayName: cleanDisplayName(displayName),
+          displayName: nextName,
           role: opened.me.role,
           seatNote: cleanSeatNote(seatNote),
           email: cleanEmail(email),
           joinedAt: opened.me.joinedAt,
         });
+        try {
+          await setDoc(
+            doc(store, "tables", opened.table.id, "presence", user.uid),
+            presencePayload(buildPresence({ uid: user.uid, displayName: nextName })),
+          );
+        } catch {
+          // Keep seat save even if presence refresh fails.
+        }
       } catch (error) {
         throw friendly(error);
       }
