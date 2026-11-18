@@ -55,6 +55,7 @@ export function TableRoom() {
     if (!ready || !user || !tableId) return;
     setMessage("");
     setLive(false);
+    let seeded = false;
     const unsub = backend.subscribeTableRoom(tableId, (snapshot, error) => {
       if (error || !snapshot) {
         setTable(null);
@@ -77,13 +78,16 @@ export function TableRoom() {
       setMessages(snapshot.messages);
       setPresence(snapshot.presence);
       setMe(snapshot.me);
-      setRename(snapshot.table.name);
-      setSeatLimit(String(snapshot.table.seatLimit));
-      setJoinPolicy(snapshot.table.joinPolicy);
-      setDisplayName(snapshot.me.displayName);
-      setSeatNote(snapshot.me.seatNote);
-      setEmail(snapshot.me.email || user.email || "");
-      setNoticesMuted(snapshot.me.noticesMuted);
+      if (!seeded) {
+        seeded = true;
+        setRename(snapshot.table.name);
+        setSeatLimit(String(snapshot.table.seatLimit));
+        setJoinPolicy(snapshot.table.joinPolicy);
+        setDisplayName(snapshot.me.displayName);
+        setSeatNote(snapshot.me.seatNote);
+        setEmail(snapshot.me.email || user.email || "");
+        setNoticesMuted(snapshot.me.noticesMuted);
+      }
       setLive(true);
     });
     return () => {
