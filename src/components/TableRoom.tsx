@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import type { MemberDoc, TableDoc } from "../lib/types";
+import type { MemberDoc, NoticeDoc, TableDoc } from "../lib/types";
 import { useTableApp } from "./AppShell";
 
 export function TableRoom() {
@@ -13,12 +13,16 @@ export function TableRoom() {
   const router = useRouter();
   const [table, setTable] = useState<TableDoc | null>(null);
   const [members, setMembers] = useState<MemberDoc[]>([]);
+  const [notices, setNotices] = useState<NoticeDoc[]>([]);
   const [me, setMe] = useState<MemberDoc | null>(null);
   const [rename, setRename] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [seatNote, setSeatNote] = useState("");
+  const [email, setEmail] = useState("");
   const [inviteUid, setInviteUid] = useState("");
   const [inviteName, setInviteName] = useState("");
+  const [noticeSubject, setNoticeSubject] = useState("");
+  const [noticeBody, setNoticeBody] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -27,11 +31,13 @@ export function TableRoom() {
     const opened = await backend.openTable(tableId);
     setTable(opened.table);
     setMembers(opened.members);
+    setNotices(opened.notices);
     setMe(opened.me);
     setRename(opened.table.name);
     setDisplayName(opened.me.displayName);
     setSeatNote(opened.me.seatNote);
-  }, [backend, tableId]);
+    setEmail(opened.me.email || user?.email || "");
+  }, [backend, tableId, user?.email]);
 
   useEffect(() => {
     if (!ready) return;
@@ -41,6 +47,7 @@ export function TableRoom() {
     void reload().catch((error: unknown) => {
       setTable(null);
       setMembers([]);
+      setNotices([]);
       setMe(null);
       setMessage(error instanceof Error ? error.message : "Could not open this table.");
     });
@@ -95,6 +102,8 @@ export function TableRoom() {
     }
   }
 
+  const recipientReady = members.filter((member) => member.email.trim()).length;
+
   return (
     <div className="stack">
       <section className="panel stack">
@@ -133,12 +142,25 @@ export function TableRoom() {
           className="stack"
           onSubmit={(event) => {
             event.preventDefault();
-            void run(() => backend.updateSeat(table.id, displayName, seatNote), "Seat saved.");
+            void run(
+              () => backend.updateSeat(table.id, displayName, seatNote, email),
+              "Seat saved.",
+            );
           }}
         >
           <label>
             Display name
             <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={40} required />
+          </label>
+          <label>
+            Notice email
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              maxLength={254}
+              placeholder="Where table notices should arrive"
+            />
           </label>
           <label>
             Seat note
@@ -171,6 +193,90 @@ export function TableRoom() {
       </section>
 
       <section className="panel stack">
+        <h2>Send a notice</h2>
+        <p className="muted">
+          The browser calls a Cloud Function. The Resend API key stays on the server. Only members of
+          this table can send. {recipientReady} member
+          {recipientReady === 1 ? "" : "s"} currently have an email saved.
+        </p>
+        <form
+          className="stack"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void (async () => {
+              setBusy(true);
+              setMessage("");
+              try {
+                const result = await backend.sendNotice(table.id, noticeSubject, noticeBody);
+                setNoticeSubject("");
+                setNoticeBody("");
+                await reload();
+                setMessage(
+                  `Notice sent to ${result.recipientCount} inbox${result.recipientCount === 1 ? "" : "es"}.`,
+                );
+              } catch (error) {
+                setMessage(error instanceof Error ? error.message : "That action failed.");
+              } finally {
+                setBusy(false);
+              }
+            })();
+          }}
+        >
+          <label>
+            Subject
+            <input
+              value={noticeSubject}
+              onChange={(event) => setNoticeSubject(event.target.value)}
+              maxLength={120}
+              required
+              placeholder="Thursday review at 7"
+            />
+          </label>
+          <label>
+            Message
+            <textarea
+              value={noticeBody}
+              onChange={(event) => setNoticeBody(event.target.value)}
+              maxLength={2000}
+              required
+              placeholder="Short note for everyone at this table"
+            />
+          </label>
+          <button type="submit" disabled={busy || recipientReady === 0}>
+            Send notice
+          </button>
+        </form>
+        {notices.length > 0 ? (
+          <div className="stack notice-list">
+            <h3>Recent notices</h3>
+            {notices.map((notice) => {
+              const sender = members.find((member) => member.uid === notice.sentBy);
+              return (
+                <article className="notice-card" key={notice.id}>
+                  <header>
+                    <strong>{notice.subject}</strong>
+                    <span className="muted">
+                      {new Date(notice.sentAt).toLocaleString(undefined, {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      })}
+                    </span>
+                  </header>
+                  <p>{notice.body}</p>
+                  <p className="muted">
+                    From {sender?.displayName ?? "a member"} · to {notice.to.length} address
+                    {notice.to.length === 1 ? "" : "es"}
+                  </p>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="muted">No notices sent yet.</p>
+        )}
+      </section>
+
+      <section className="panel stack">
         <h2>Members</h2>
         <div className="member-grid">
           {members.map((member) => (
@@ -180,6 +286,7 @@ export function TableRoom() {
                 <span className={`pill ${member.role}`}>{member.role}</span>
               </header>
               <p className="muted">{member.seatNote || "No seat note yet."}</p>
+              <p className="muted">{member.email ? `Notice email saved` : "No notice email yet"}</p>
               <p className="mono">{member.uid}</p>
               {me.role === "owner" && member.role !== "owner" ? (
                 <button
@@ -203,17 +310,18 @@ export function TableRoom() {
           <h2>Invite</h2>
           <p className="muted">
             Ask the other person to sign in and send you their account id from the home page. Paste it
-            here. No email lookup without a server.
+            here. They can add their notice email after they join.
           </p>
           <form
             className="stack"
             onSubmit={(event) => {
               event.preventDefault();
               void run(
-                () => backend.inviteMember(table.id, inviteUid, inviteName).then(() => {
-                  setInviteUid("");
-                  setInviteName("");
-                }),
+                () =>
+                  backend.inviteMember(table.id, inviteUid, inviteName).then(() => {
+                    setInviteUid("");
+                    setInviteName("");
+                  }),
                 "Invite saved. They can open this table id after signing in.",
               );
             }}
@@ -245,6 +353,7 @@ export function TableRoom() {
                 await backend.deleteTable(
                   table.id,
                   members.map((member) => member.uid),
+                  notices.map((notice) => notice.id),
                 );
                 router.push("/");
               }, "Table deleted.");

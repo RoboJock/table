@@ -30,15 +30,22 @@ service cloud.firestore {
       return value is string && value.size() <= 500;
     }
 
+    function emailOk(value) {
+      return value is string
+        && value.size() <= 254
+        && (value.size() == 0 || value.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$'));
+    }
+
     // Web clients store whole numbers as floats; REST/admin may use ints.
     function numberOk(value) {
       return (value is int || value is float) && value > 0;
     }
 
     function memberCreateOk(tableId, uid) {
-      return request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'joinedAt'])
+      return request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'email', 'joinedAt'])
         && displayNameOk(request.resource.data.displayName)
         && seatNoteOk(request.resource.data.seatNote)
+        && emailOk(request.resource.data.email)
         && numberOk(request.resource.data.joinedAt)
         && request.resource.data.role in ['owner', 'member']
         && (
@@ -61,7 +68,8 @@ service cloud.firestore {
         && request.resource.data.joinedAt == resource.data.joinedAt
         && displayNameOk(request.resource.data.displayName)
         && seatNoteOk(request.resource.data.seatNote)
-        && request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'joinedAt']);
+        && emailOk(request.resource.data.email)
+        && request.resource.data.keys().hasOnly(['displayName', 'role', 'seatNote', 'email', 'joinedAt']);
     }
 
     match /tables/{tableId} {
@@ -93,6 +101,14 @@ service cloud.firestore {
 
         allow delete: if isOwner(tableId)
           || (signedIn() && request.auth.uid == uid);
+      }
+
+      // Notice log is created only by the Cloud Function (Admin SDK).
+      // Owners may delete notices when tearing down a table.
+      match /notices/{noticeId} {
+        allow read: if isMember(tableId);
+        allow create, update: if false;
+        allow delete: if isOwner(tableId);
       }
     }
   }

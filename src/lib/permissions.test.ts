@@ -5,7 +5,9 @@ import {
   canPromoteToOwner,
   canUpdateSeatNote,
   signedOutCanRead,
+  signedOutCanSendNotice,
   strangerCanReadTable,
+  strangerCanSendNotice,
 } from "./permissions";
 import { buildMember, buildTable } from "./tables";
 
@@ -38,5 +40,12 @@ describe("permission brief deny cases", () => {
   it("denies signed-out reads", () => {
     assert.equal(signedOutCanRead(), false);
     assert.equal(strangerCanReadTable(null, table, members), false);
+  });
+
+  it("denies notice sends for strangers and signed-out callers", () => {
+    assert.equal(signedOutCanSendNotice(), false);
+    assert.equal(strangerCanSendNotice(null, members), false);
+    assert.equal(strangerCanSendNotice("stranger", members), false);
+    assert.equal(strangerCanSendNotice("member2", members), true);
   });
 });

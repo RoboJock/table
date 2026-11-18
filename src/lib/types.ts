@@ -18,5 +18,16 @@ export type MemberDoc = {
   displayName: string;
   role: MemberRole;
   seatNote: string;
+  /** Inbox address for table notices. Empty until the member saves one. */
+  email: string;
   joinedAt: number;
+};
+
+export type NoticeDoc = {
+  id: string;
+  subject: string;
+  body: string;
+  sentBy: string;
+  sentAt: number;
+  to: string[];
 };

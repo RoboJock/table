@@ -44,3 +44,16 @@ export function canPromoteToOwner(
 export function signedOutCanRead(): boolean {
   return false;
 }
+
+/** Pure stand-in for the Notice deny case: signed-out callers never send mail. */
+export function signedOutCanSendNotice(): boolean {
+  return false;
+}
+
+export function strangerCanSendNotice(
+  viewerUid: string | null,
+  members: MemberDoc[],
+): boolean {
+  if (!viewerUid) return false;
+  return members.some((member) => member.uid === viewerUid);
+}

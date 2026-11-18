@@ -8,3 +8,6 @@ out
 .firebase
 .DS_Store
 tsconfig.tsbuildinfo
+functions/lib
+functions/.env
+functions/.env.local

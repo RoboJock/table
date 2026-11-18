@@ -23,10 +23,12 @@ import {
   writeBatch,
   type Firestore,
 } from "firebase/firestore";
+import { getFunctions, httpsCallable, type Functions } from "firebase/functions";
 import {
   buildMember,
   buildTable,
   cleanDisplayName,
+  cleanEmail,
   cleanSeatNote,
   cleanTableName,
   cleanUid,
@@ -34,9 +36,15 @@ import {
   newTableId,
   rememberTableId,
   sortMembers,
+  sortNotices,
   tablePayload,
 } from "./tables";
-import type { AppUser, MemberDoc, TableDoc } from "./types";
+import type { AppUser, MemberDoc, NoticeDoc, TableDoc } from "./types";
+
+export type SendNoticeResult = {
+  noticeId: string;
+  recipientCount: number;
+};
 
 export type Backend = {
   configured: boolean;
@@ -45,14 +53,20 @@ export type Backend = {
   signIn(email: string, password: string): Promise<void>;
   signOut(): Promise<void>;
   listOwnedTables(): Promise<TableDoc[]>;
-  openTable(tableId: string): Promise<{ table: TableDoc; members: MemberDoc[]; me: MemberDoc }>;
+  openTable(tableId: string): Promise<{
+    table: TableDoc;
+    members: MemberDoc[];
+    me: MemberDoc;
+    notices: NoticeDoc[];
+  }>;
   createTable(name: string): Promise<TableDoc>;
   renameTable(tableId: string, name: string): Promise<void>;
-  deleteTable(tableId: string, memberUids: string[]): Promise<void>;
+  deleteTable(tableId: string, memberUids: string[], noticeIds: string[]): Promise<void>;
   inviteMember(tableId: string, uid: string, displayName: string): Promise<MemberDoc>;
   removeMember(tableId: string, uid: string): Promise<void>;
   leaveTable(tableId: string): Promise<void>;
-  updateSeat(tableId: string, displayName: string, seatNote: string): Promise<void>;
+  updateSeat(tableId: string, displayName: string, seatNote: string, email: string): Promise<void>;
+  sendNotice(tableId: string, subject: string, body: string): Promise<SendNoticeResult>;
 };
 
 export function firebasePublicConfig(): Record<string, string> | null {
@@ -71,6 +85,8 @@ export function firebasePublicConfig(): Record<string, string> | null {
 
 function friendly(error: unknown): Error {
   const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+  const message =
+    typeof error === "object" && error && "message" in error ? String((error as { message: unknown }).message) : "";
   const text: Record<string, string> = {
     "auth/operation-not-allowed": "Email sign-in is turned off in the Firebase console.",
     "auth/email-already-in-use": "That email already has an account. Sign in instead.",
@@ -80,6 +96,14 @@ function friendly(error: unknown): Error {
     "auth/too-many-requests": "Too many attempts. Wait a minute and try again.",
     "permission-denied": "Permission denied by the table rules.",
     "not-found": "That table could not be found.",
+    "functions/unauthenticated": "Sign in first.",
+    "functions/permission-denied": "Only table members can send a notice.",
+    "functions/failed-precondition":
+      message || "No member emails are saved yet. Each member should add an email on their seat.",
+    "functions/invalid-argument": message || "That notice could not be sent.",
+    "functions/internal": message || "The notice server failed. Try again in a moment.",
+    "functions/unavailable": "The notice server is not deployed yet.",
+    "functions/not-found": "The notice server is not deployed yet.",
   };
   if (code && text[code]) return new Error(text[code]);
   if (error instanceof Error && error.message) return error;
@@ -89,6 +113,7 @@ function friendly(error: unknown): Error {
 let firebaseApp: FirebaseApp | undefined;
 let auth: Auth | undefined;
 let db: Firestore | undefined;
+let functions: Functions | undefined;
 
 function services() {
   const config = firebasePublicConfig();
@@ -96,7 +121,8 @@ function services() {
   firebaseApp ??= initializeApp(config);
   auth ??= getAuth(firebaseApp);
   db ??= getFirestore(firebaseApp);
-  return { auth, db };
+  functions ??= getFunctions(firebaseApp);
+  return { auth, db, functions };
 }
 
 function requireUser() {
@@ -130,63 +156,95 @@ function readMember(uid: string, data: Record<string, unknown>): MemberDoc {
   ) {
     throw new Error("That member document is incomplete.");
   }
+  const email = typeof data.email === "string" ? data.email : "";
   return {
     uid,
     displayName: data.displayName,
     role: data.role,
     seatNote: data.seatNote,
+    email,
     joinedAt: data.joinedAt,
   };
 }
 
-export function createBackend(): Backend {
-  const configured = firebasePublicConfig() !== null;
-
-  if (!configured) {
-    return {
-      configured: false,
-      subscribe(listener) {
-        listener(null);
-        return () => undefined;
-      },
-      async register() {
-        throw new Error("Firebase is not configured. Copy .env.example to .env.local.");
-      },
-      async signIn() {
-        throw new Error("Firebase is not configured. Copy .env.example to .env.local.");
-      },
-      async signOut() {
-        return;
-      },
-      async listOwnedTables() {
-        return [];
-      },
-      async openTable() {
-        throw new Error("Firebase is not configured.");
-      },
-      async createTable() {
-        throw new Error("Firebase is not configured.");
-      },
-      async renameTable() {
-        throw new Error("Firebase is not configured.");
-      },
-      async deleteTable() {
-        throw new Error("Firebase is not configured.");
-      },
-      async inviteMember() {
-        throw new Error("Firebase is not configured.");
-      },
-      async removeMember() {
-        throw new Error("Firebase is not configured.");
-      },
-      async leaveTable() {
-        throw new Error("Firebase is not configured.");
-      },
-      async updateSeat() {
-        throw new Error("Firebase is not configured.");
-      },
-    };
+function readNotice(id: string, data: Record<string, unknown>): NoticeDoc {
+  if (
+    typeof data.subject !== "string" ||
+    typeof data.body !== "string" ||
+    typeof data.sentBy !== "string" ||
+    typeof data.sentAt !== "number" ||
+    !Array.isArray(data.to)
+  ) {
+    throw new Error("That notice document is incomplete.");
   }
+  return {
+    id,
+    subject: data.subject,
+    body: data.body,
+    sentBy: data.sentBy,
+    sentAt: data.sentAt,
+    to: data.to.filter((item): item is string => typeof item === "string"),
+  };
+}
+
+function notConfiguredBackend(): Backend {
+  const missing = () => {
+    throw new Error("Firebase is not configured. Copy .env.example to .env.local.");
+  };
+  return {
+    configured: false,
+    subscribe(listener) {
+      listener(null);
+      return () => undefined;
+    },
+    async register() {
+      missing();
+    },
+    async signIn() {
+      missing();
+    },
+    async signOut() {
+      return;
+    },
+    async listOwnedTables() {
+      return [];
+    },
+    async openTable() {
+      missing();
+      return undefined as never;
+    },
+    async createTable() {
+      missing();
+      return undefined as never;
+    },
+    async renameTable() {
+      missing();
+    },
+    async deleteTable() {
+      missing();
+    },
+    async inviteMember() {
+      missing();
+      return undefined as never;
+    },
+    async removeMember() {
+      missing();
+    },
+    async leaveTable() {
+      missing();
+    },
+    async updateSeat() {
+      missing();
+    },
+    async sendNotice() {
+      missing();
+      return undefined as never;
+    },
+  };
+}
+
+export function createBackend(): Backend {
+  if (firebasePublicConfig() === null) return notConfiguredBackend();
 
   return {
     configured: true,
@@ -249,8 +307,10 @@ export function createBackend(): Backend {
         const members = sortMembers(membersSnap.docs.map((item) => readMember(item.id, item.data())));
         const me = members.find((member) => member.uid === user.uid);
         if (!me) throw new Error("You are not a member of this table.");
+        const noticesSnap = await getDocs(collection(store, "tables", id, "notices"));
+        const notices = sortNotices(noticesSnap.docs.map((item) => readNotice(item.id, item.data())));
         rememberTableId(user.uid, id);
-        return { table, members, me };
+        return { table, members, me, notices };
       } catch (error) {
         throw friendly(error);
       }
@@ -269,6 +329,7 @@ export function createBackend(): Backend {
           displayName: user.displayName?.trim() || "Owner",
           role: "owner",
           seatNote: "",
+          email: user.email ?? "",
         });
         // Write the table first, then the owner member doc. A single batch fails
         // rules that get() the new table while creating its first member.
@@ -307,7 +368,7 @@ export function createBackend(): Backend {
         throw friendly(error);
       }
     },
-    async deleteTable(tableId, memberUids) {
+    async deleteTable(tableId, memberUids, noticeIds) {
       try {
         const user = requireUser();
         const { db: store } = services();
@@ -318,6 +379,9 @@ export function createBackend(): Backend {
         const batch = writeBatch(store);
         for (const uid of memberUids) {
           batch.delete(doc(store, "tables", opened.table.id, "members", uid));
+        }
+        for (const noticeId of noticeIds) {
+          batch.delete(doc(store, "tables", opened.table.id, "notices", noticeId));
         }
         batch.delete(doc(store, "tables", opened.table.id));
         await batch.commit();
@@ -341,6 +405,7 @@ export function createBackend(): Backend {
           displayName: displayName.trim() ? displayName : "Member",
           role: "member",
           seatNote: "",
+          email: "",
         });
         await setDoc(doc(store, "tables", opened.table.id, "members", member.uid), memberPayload(member));
         return member;
@@ -374,7 +439,7 @@ export function createBackend(): Backend {
         throw friendly(error);
       }
     },
-    async updateSeat(tableId, displayName, seatNote) {
+    async updateSeat(tableId, displayName, seatNote, email) {
       try {
         const user = requireUser();
         const { db: store } = services();
@@ -383,8 +448,23 @@ export function createBackend(): Backend {
           displayName: cleanDisplayName(displayName),
           role: opened.me.role,
           seatNote: cleanSeatNote(seatNote),
+          email: cleanEmail(email),
           joinedAt: opened.me.joinedAt,
         });
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async sendNotice(tableId, subject, body) {
+      try {
+        requireUser();
+        const { functions: fns } = services();
+        const callable = httpsCallable<{ tableId: string; subject: string; body: string }, SendNoticeResult>(
+          fns,
+          "sendNotice",
+        );
+        const result = await callable({ tableId: tableId.trim(), subject, body });
+        return result.data;
       } catch (error) {
         throw friendly(error);
       }
