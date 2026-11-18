@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { joinPolicyLabel, partitionOwnedTables, readRecentTableIds, seatsRemaining } from "../lib/tables";
 import type { JoinCodeDoc, JoinPolicy, TableDoc } from "../lib/types";
 import { useTableApp } from "./AppShell";
+import { Fold } from "./Fold";
 
 export function Home() {
   const { backend, user, ready } = useTableApp();
@@ -116,37 +117,49 @@ export function Home() {
     }
   }
 
+  const openSeats = (preview: typeof joinPreview) =>
+    preview
+      ? seatsRemaining({
+          ...preview,
+          id: preview.tableId,
+          joinCode: preview.code,
+          archivedAt: 0,
+          createdAt: 0,
+        })
+      : 0;
+
   return (
-    <div className="stack">
-      <section className="hero panel">
+    <div className="stack compact-page">
+      <section className="hero panel home-compact">
         <h1>Your tables</h1>
         <p className="lede">Signed in as {user.name}. Share a table’s join code when you want people in.</p>
       </section>
 
-      <section className="panel stack">
-        <h2>Create a table</h2>
+      <Fold title="Create a table" summary="Name, seats, and who can sit" defaultOpen>
         <form className="stack" onSubmit={(event) => void createTable(event)}>
-          <label>
-            Table name
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Friday campaign"
-              required
-              maxLength={40}
-            />
-          </label>
-          <label>
-            How many seats
-            <input
-              type="number"
-              min={1}
-              max={40}
-              value={seatLimit}
-              onChange={(event) => setSeatLimit(event.target.value)}
-              required
-            />
-          </label>
+          <div className="field-pair">
+            <label>
+              Table name
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Friday campaign"
+                required
+                maxLength={40}
+              />
+            </label>
+            <label>
+              How many seats
+              <input
+                type="number"
+                min={1}
+                max={40}
+                value={seatLimit}
+                onChange={(event) => setSeatLimit(event.target.value)}
+                required
+              />
+            </label>
+          </div>
           <fieldset className="join-policy">
             <legend>Who can sit</legend>
             <label className="choice">
@@ -174,14 +187,15 @@ export function Home() {
               </span>
             </label>
           </fieldset>
-          <button type="submit" disabled={busy}>
-            Create table
-          </button>
+          <div className="row">
+            <button type="submit" disabled={busy}>
+              Create table
+            </button>
+          </div>
         </form>
-      </section>
+      </Fold>
 
-      <section className="panel stack">
-        <h2>Join with a code</h2>
+      <Fold title="Join with a code" summary="Enter a 6-character code">
         <p className="muted">
           Enter the 6-character code from the table owner. If you already belong, you go straight in.
         </p>
@@ -208,23 +222,9 @@ export function Home() {
               <strong>{joinPreview.name}</strong>
             </p>
             <p className="muted">
-              {joinPolicyLabel(joinPreview.joinPolicy)} ·{" "}
-              {seatsRemaining({
-                ...joinPreview,
-                id: joinPreview.tableId,
-                joinCode: joinPreview.code,
-                archivedAt: 0,
-                createdAt: 0,
-              })}{" "}
-              of {joinPreview.seatLimit} seats open
+              {joinPolicyLabel(joinPreview.joinPolicy)} · {openSeats(joinPreview)} of {joinPreview.seatLimit} seats open
             </p>
-            {seatsRemaining({
-              ...joinPreview,
-              id: joinPreview.tableId,
-              joinCode: joinPreview.code,
-              archivedAt: 0,
-              createdAt: 0,
-            }) > 0 ? (
+            {openSeats(joinPreview) > 0 ? (
               <button type="button" disabled={busy} onClick={() => void takeSeat()}>
                 Take a seat
               </button>
@@ -248,9 +248,9 @@ export function Home() {
             </ul>
           </div>
         ) : null}
-      </section>
+      </Fold>
 
-      <section className="panel stack">
+      <section className="panel owned-block">
         <h2>Tables you own</h2>
         {activeOwned.length === 0 ? (
           <p className="muted">None yet. Create one above.</p>
@@ -272,8 +272,7 @@ export function Home() {
       </section>
 
       {archivedOwned.length > 0 ? (
-        <section className="panel stack">
-          <h2>Archived tables</h2>
+        <Fold title="Archived tables" summary={`${archivedOwned.length} put away · restore from here`}>
           <p className="muted">Put away for later. Restore to use the join code again, or open to export or delete forever.</p>
           <ul className="table-list">
             {archivedOwned.map((table) => (
@@ -311,7 +310,7 @@ export function Home() {
               </li>
             ))}
           </ul>
-        </section>
+        </Fold>
       ) : null}
 
       {message ? (
