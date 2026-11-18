@@ -72,7 +72,7 @@ export const sendNotice = onCall(
     if (recipients.length === 0) {
       throw new HttpsError(
         "failed-precondition",
-        "No member emails are saved yet. Each member should add an email on their seat.",
+        "No one at this table has an email for reminders yet. Add one on your seat first.",
       );
     }
 

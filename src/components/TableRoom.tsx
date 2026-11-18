@@ -153,13 +153,13 @@ export function TableRoom() {
             <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={40} required />
           </label>
           <label>
-            Notice email
+            Email for reminders
             <input
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               maxLength={254}
-              placeholder="Where table notices should arrive"
+              placeholder="Where reminders for this table should go"
             />
           </label>
           <label>
@@ -194,11 +194,7 @@ export function TableRoom() {
 
       <section className="panel stack">
         <h2>Send a notice</h2>
-        <p className="muted">
-          The browser calls a Cloud Function. The Resend API key stays on the server. Only members of
-          this table can send. {recipientReady} member
-          {recipientReady === 1 ? "" : "s"} currently have an email saved.
-        </p>
+        <p className="muted">Send out an email reminder for people at this table.</p>
         <form
           className="stack"
           onSubmit={(event) => {
@@ -286,7 +282,7 @@ export function TableRoom() {
                 <span className={`pill ${member.role}`}>{member.role}</span>
               </header>
               <p className="muted">{member.seatNote || "No seat note yet."}</p>
-              <p className="muted">{member.email ? `Notice email saved` : "No notice email yet"}</p>
+              <p className="muted">{member.email ? "Gets email reminders" : "No reminder email yet"}</p>
               <p className="mono">{member.uid}</p>
               {me.role === "owner" && member.role !== "owner" ? (
                 <button
@@ -310,7 +306,7 @@ export function TableRoom() {
           <h2>Invite</h2>
           <p className="muted">
             Ask the other person to sign in and send you their account id from the home page. Paste it
-            here. They can add their notice email after they join.
+            here. They can add an email for reminders after they join.
           </p>
           <form
             className="stack"

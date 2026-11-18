@@ -99,7 +99,7 @@ function friendly(error: unknown): Error {
     "functions/unauthenticated": "Sign in first.",
     "functions/permission-denied": "Only table members can send a notice.",
     "functions/failed-precondition":
-      message || "No member emails are saved yet. Each member should add an email on their seat.",
+      message || "No one at this table has an email for reminders yet. Add one on your seat first.",
     "functions/invalid-argument": message || "That notice could not be sent.",
     "functions/internal": message || "The notice server failed. Try again in a moment.",
     "functions/unavailable": "The notice server is not deployed yet.",
