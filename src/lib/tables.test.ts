@@ -46,6 +46,8 @@ describe("table helpers", () => {
       seatLimit: 4,
       joinPolicy: "inviteOnly",
       memberCount: 1,
+      archived: false,
+      archivedAt: 0,
       createdAt: 10,
     });
     const member = buildMember({

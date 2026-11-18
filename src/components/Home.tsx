@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { joinPolicyLabel, readRecentTableIds, seatsRemaining } from "../lib/tables";
+import { joinPolicyLabel, partitionOwnedTables, readRecentTableIds, seatsRemaining } from "../lib/tables";
 import type { JoinCodeDoc, JoinPolicy, TableDoc } from "../lib/types";
 import { useTableApp } from "./AppShell";
 
@@ -20,6 +20,11 @@ export function Home() {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
+  async function refreshOwned() {
+    if (!user) return;
+    setOwned(await backend.listOwnedTables());
+  }
+
   useEffect(() => {
     if (!ready || !user) {
       setOwned([]);
@@ -27,13 +32,12 @@ export function Home() {
       return;
     }
     setRecent(readRecentTableIds(user.id));
-    void backend
-      .listOwnedTables()
-      .then(setOwned)
-      .catch((error: unknown) => {
-        setMessage(error instanceof Error ? error.message : "Could not load tables.");
-      });
+    void refreshOwned().catch((error: unknown) => {
+      setMessage(error instanceof Error ? error.message : "Could not load tables.");
+    });
   }, [backend, ready, user]);
+
+  const { active: activeOwned, archived: archivedOwned } = partitionOwnedTables(owned);
 
   if (!ready) return <p className="status">Loading…</p>;
 
@@ -209,6 +213,7 @@ export function Home() {
                 ...joinPreview,
                 id: joinPreview.tableId,
                 joinCode: joinPreview.code,
+                archivedAt: 0,
                 createdAt: 0,
               })}{" "}
               of {joinPreview.seatLimit} seats open
@@ -217,6 +222,7 @@ export function Home() {
               ...joinPreview,
               id: joinPreview.tableId,
               joinCode: joinPreview.code,
+              archivedAt: 0,
               createdAt: 0,
             }) > 0 ? (
               <button type="button" disabled={busy} onClick={() => void takeSeat()}>
@@ -246,11 +252,11 @@ export function Home() {
 
       <section className="panel stack">
         <h2>Tables you own</h2>
-        {owned.length === 0 ? (
+        {activeOwned.length === 0 ? (
           <p className="muted">None yet. Create one above.</p>
         ) : (
           <ul className="table-list">
-            {owned.map((table) => (
+            {activeOwned.map((table) => (
               <li key={table.id}>
                 <Link href={`/table?id=${encodeURIComponent(table.id)}`}>
                   <strong>{table.name}</strong>
@@ -264,6 +270,49 @@ export function Home() {
           </ul>
         )}
       </section>
+
+      {archivedOwned.length > 0 ? (
+        <section className="panel stack">
+          <h2>Archived tables</h2>
+          <p className="muted">Put away for later. Restore to use the join code again, or open to export or delete forever.</p>
+          <ul className="table-list">
+            {archivedOwned.map((table) => (
+              <li key={table.id}>
+                <div className="stack" style={{ gap: "0.45rem" }}>
+                  <Link href={`/table?id=${encodeURIComponent(table.id)}`}>
+                    <strong>{table.name}</strong>
+                    <span className="mono">
+                      {table.memberCount}/{table.seatLimit} · archived
+                    </span>
+                  </Link>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      void (async () => {
+                        setBusy(true);
+                        setMessage("");
+                        try {
+                          await backend.restoreTable(table.id);
+                          await refreshOwned();
+                          setMessage(`Restored “${table.name}”.`);
+                        } catch (error) {
+                          setMessage(error instanceof Error ? error.message : "Could not restore.");
+                        } finally {
+                          setBusy(false);
+                        }
+                      })();
+                    }}
+                  >
+                    Restore
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {message ? (
         <p className="status" role="status">

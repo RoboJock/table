@@ -142,8 +142,14 @@ export function TableRoom() {
             <p className="muted">
               {joinPolicyLabel(table.joinPolicy)} · {table.memberCount}/{table.seatLimit} seats filled
               {seatsRemaining(table) === 0 ? " · full" : ` · ${seatsRemaining(table)} open`}
+              {table.archived ? " · archived" : ""}
               {live ? " · live" : ""}
             </p>
+            {table.archived ? (
+              <p className="status">
+                This table is archived. Joining is paused until the owner restores it.
+              </p>
+            ) : null}
             <p className="muted">Join code</p>
             <div className="copy-row">
               <p className="mono" style={{ margin: 0 }}>
@@ -643,32 +649,90 @@ export function TableRoom() {
         </div>
       </section>
 
+      <section className="panel stack">
+        <h2>Export</h2>
+        <p className="muted">
+          Download a JSON copy of this table’s seats, notices, activity, and file list for your records.
+        </p>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy}
+          onClick={() => {
+            void run(async () => {
+              const result = await backend.exportTable(table.id);
+              setMessage(`Downloaded ${result.filename}.`);
+            }, "Export ready.");
+          }}
+        >
+          Download table data
+        </button>
+      </section>
+
       {me.role === "owner" ? (
         <section className="panel stack">
-          <h2>Share this table</h2>
-          <p className="muted">
-            {seatsRemaining(table) === 0
-              ? "This table is full. Raise the seat limit before sharing the code again."
-              : "Send people the join code above. They sign in, enter the code on the home page, and take a seat."}
-          </p>
-          <button
-            type="button"
-            className="danger"
-            disabled={busy}
-            onClick={() => {
-              if (!window.confirm("Delete this table and every seat?")) return;
-              void run(async () => {
-                await backend.deleteTable(
-                  table.id,
-                  members.map((member) => member.uid),
-                  notices.map((notice) => notice.id),
-                );
-                router.push("/");
-              }, "Table deleted.");
-            }}
-          >
-            Delete table
-          </button>
+          <h2>{table.archived ? "Archived table" : "Share this table"}</h2>
+          {table.archived ? (
+            <p className="muted">
+              Restore to make the join code work again, or delete forever when you are done with it.
+            </p>
+          ) : (
+            <p className="muted">
+              {seatsRemaining(table) === 0
+                ? "This table is full. Raise the seat limit before sharing the code again."
+                : "Send people the join code above. They sign in, enter the code on the home page, and take a seat. Archive puts the table away without deleting seats."}
+            </p>
+          )}
+          <div className="row">
+            {table.archived ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  void run(() => backend.restoreTable(table.id), "Table restored.");
+                }}
+              >
+                Restore table
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => {
+                  void run(() => backend.archiveTable(table.id), "Table archived.");
+                }}
+              >
+                Archive table
+              </button>
+            )}
+            <button
+              type="button"
+              className="danger"
+              disabled={busy}
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    table.archived
+                      ? "Delete this archived table and every seat forever?"
+                      : "Delete this table and every seat forever? Prefer Archive if you might need it later.",
+                  )
+                ) {
+                  return;
+                }
+                void run(async () => {
+                  await backend.deleteTable(
+                    table.id,
+                    members.map((member) => member.uid),
+                    notices.map((notice) => notice.id),
+                  );
+                  router.push("/");
+                }, "Table deleted.");
+              }}
+            >
+              Delete forever
+            </button>
+          </div>
         </section>
       ) : null}
 

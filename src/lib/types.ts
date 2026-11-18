@@ -19,6 +19,10 @@ export type TableDoc = {
   joinPolicy: JoinPolicy;
   /** Living member count; kept in sync on join/leave/remove. */
   memberCount: number;
+  /** Soft-deleted / put away without wiping seats. */
+  archived: boolean;
+  /** When archived; 0 while the table is active. */
+  archivedAt: number;
   createdAt: number;
 };
 
@@ -61,7 +65,9 @@ export type ActivityType =
   | "removed"
   | "notice"
   | "settings"
-  | "code_rotated";
+  | "code_rotated"
+  | "archived"
+  | "restored";
 
 export type ActivityDoc = {
   id: string;
@@ -81,6 +87,7 @@ export type JoinCodeDoc = {
   memberCount: number;
   joinPolicy: JoinPolicy;
   ownerId: string;
+  archived: boolean;
 };
 
 /** Who currently has this table open. Stale rows age out client-side. */

@@ -40,6 +40,10 @@ service cloud.firestore {
       return (value is int || value is float) && value > 0;
     }
 
+    function nonNegNumberOk(value) {
+      return (value is int || value is float) && value >= 0;
+    }
+
     function seatLimitOk(value) {
       return (value is int || value is float) && value >= 1 && value <= 40;
     }
@@ -58,15 +62,26 @@ service cloud.firestore {
 
     function tableDataOk(data) {
       return data.keys().hasOnly([
-          'name', 'ownerId', 'joinCode', 'seatLimit', 'joinPolicy', 'memberCount', 'createdAt'
+          'name', 'ownerId', 'joinCode', 'seatLimit', 'joinPolicy', 'memberCount',
+          'archived', 'archivedAt', 'createdAt'
         ])
         && nameOk(data.name)
         && joinCodeOk(data.joinCode)
         && seatLimitOk(data.seatLimit)
         && joinPolicyOk(data.joinPolicy)
         && memberCountOk(data.memberCount)
+        && data.archived is bool
+        && nonNegNumberOk(data.archivedAt)
+        && (
+          (data.archived == false && data.archivedAt == 0)
+          || (data.archived == true && data.archivedAt > 0)
+        )
         && numberOk(data.createdAt)
         && data.memberCount <= data.seatLimit;
+    }
+
+    function tableIsActive(tableId) {
+      return !(get(/databases/$(database)/documents/tables/$(tableId)).data.archived == true);
     }
 
     function memberCreateOk(tableId, uid) {
@@ -83,9 +98,10 @@ service cloud.firestore {
             && get(/databases/$(database)/documents/tables/$(tableId)).data.ownerId == request.auth.uid
           )
           || (
-            // Join by code (both policies): claim your own member seat.
+            // Join by code (both policies): claim your own member seat on active tables.
             uid == request.auth.uid
             && request.resource.data.role == 'member'
+            && tableIsActive(tableId)
           )
         );
     }
@@ -191,7 +207,8 @@ service cloud.firestore {
 
     function activityTypeOk(value) {
       return value in [
-        'created', 'joined', 'left', 'removed', 'notice', 'settings', 'code_rotated'
+        'created', 'joined', 'left', 'removed', 'notice', 'settings',
+        'code_rotated', 'archived', 'restored'
       ];
     }
 
@@ -230,6 +247,8 @@ service cloud.firestore {
         && request.resource.data.seatLimit == resource.data.seatLimit
         && request.resource.data.joinPolicy == resource.data.joinPolicy
         && request.resource.data.joinCode == resource.data.joinCode
+        && request.resource.data.archived == resource.data.archived
+        && request.resource.data.archivedAt == resource.data.archivedAt
         && tableDataOk(request.resource.data)
         && (
           request.resource.data.memberCount == resource.data.memberCount + 1
@@ -239,7 +258,7 @@ service cloud.firestore {
 
     function joinCodeDocOk(code) {
       return request.resource.data.keys().hasOnly([
-          'tableId', 'name', 'seatLimit', 'memberCount', 'joinPolicy', 'ownerId'
+          'tableId', 'name', 'seatLimit', 'memberCount', 'joinPolicy', 'ownerId', 'archived'
         ])
         && request.resource.data.tableId is string
         && request.resource.data.tableId.size() >= 6
@@ -247,27 +266,33 @@ service cloud.firestore {
         && seatLimitOk(request.resource.data.seatLimit)
         && memberCountOk(request.resource.data.memberCount)
         && joinPolicyOk(request.resource.data.joinPolicy)
+        && request.resource.data.archived is bool
         && request.resource.data.ownerId == request.auth.uid
         && get(/databases/$(database)/documents/tables/$(request.resource.data.tableId)).data.ownerId
           == request.auth.uid
         && get(/databases/$(database)/documents/tables/$(request.resource.data.tableId)).data.joinCode
-          == code;
+          == code
+        && get(/databases/$(database)/documents/tables/$(request.resource.data.tableId)).data.archived
+          == request.resource.data.archived;
     }
 
-    // After join/leave, any signed-in user may refresh the public seat count so
-    // it matches the live table document.
+    // After join/leave/archive, any signed-in user may refresh public peek fields
+    // so they match the live table document.
     function joinCodeCountSyncOk(code) {
       return request.resource.data.keys().hasOnly([
-          'tableId', 'name', 'seatLimit', 'memberCount', 'joinPolicy', 'ownerId'
+          'tableId', 'name', 'seatLimit', 'memberCount', 'joinPolicy', 'ownerId', 'archived'
         ])
         && request.resource.data.tableId == resource.data.tableId
         && request.resource.data.ownerId == resource.data.ownerId
         && request.resource.data.name == resource.data.name
         && request.resource.data.seatLimit == resource.data.seatLimit
         && request.resource.data.joinPolicy == resource.data.joinPolicy
+        && request.resource.data.archived is bool
         && memberCountOk(request.resource.data.memberCount)
         && get(/databases/$(database)/documents/tables/$(resource.data.tableId)).data.memberCount
           == request.resource.data.memberCount
+        && get(/databases/$(database)/documents/tables/$(resource.data.tableId)).data.archived
+          == request.resource.data.archived
         && get(/databases/$(database)/documents/tables/$(resource.data.tableId)).data.joinCode
           == code;
     }
@@ -308,7 +333,9 @@ service cloud.firestore {
       allow create: if signedIn()
         && tableDataOk(request.resource.data)
         && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.memberCount == 1;
+        && request.resource.data.memberCount == 1
+        && request.resource.data.archived == false
+        && request.resource.data.archivedAt == 0;
 
       allow update: if ownerTableUpdateOk(tableId) || memberCountBumpOk();
 

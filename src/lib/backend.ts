@@ -28,6 +28,12 @@ import {
 } from "firebase/firestore";
 import { activityPayload, buildActivity, sortActivity } from "./activity";
 import {
+  buildTableExport,
+  downloadTextFile,
+  tableExportFilename,
+  tableExportJson,
+} from "./export";
+import {
   assertAllowedFile,
   buildFileDoc,
   cleanFileVisibility,
@@ -113,6 +119,9 @@ export type Backend = {
     joinPolicy: JoinPolicy,
   ): Promise<void>;
   rotateJoinCode(tableId: string): Promise<string>;
+  archiveTable(tableId: string): Promise<void>;
+  restoreTable(tableId: string): Promise<void>;
+  exportTable(tableId: string): Promise<{ filename: string }>;
   deleteTable(tableId: string, memberUids: string[], noticeIds: string[]): Promise<void>;
   joinWithCode(code: string): Promise<{ tableId: string; member: MemberDoc }>;
   joinTable(tableId: string): Promise<MemberDoc>;
@@ -219,6 +228,9 @@ function readTable(id: string, data: Record<string, unknown>): TableDoc {
       ? data.joinPolicy
       : "inviteOnly";
   const joinCode = typeof data.joinCode === "string" ? data.joinCode : "";
+  const archived = data.archived === true;
+  const archivedAt =
+    typeof data.archivedAt === "number" ? data.archivedAt : archived ? data.createdAt : 0;
   return {
     id,
     name: data.name,
@@ -227,6 +239,8 @@ function readTable(id: string, data: Record<string, unknown>): TableDoc {
     seatLimit,
     joinPolicy,
     memberCount,
+    archived,
+    archivedAt: archived ? archivedAt : 0,
     createdAt: data.createdAt,
   };
 }
@@ -302,6 +316,8 @@ function readActivity(id: string, data: Record<string, unknown>): ActivityDoc {
     "notice",
     "settings",
     "code_rotated",
+    "archived",
+    "restored",
   ]);
   if (
     typeof data.type !== "string" ||
@@ -353,6 +369,7 @@ function readJoinCode(code: string, data: Record<string, unknown>): JoinCodeDoc 
     seatLimit: data.seatLimit,
     memberCount: data.memberCount,
     joinPolicy: data.joinPolicy,
+    archived: data.archived === true,
   };
 }
 
@@ -403,17 +420,32 @@ async function ensureTableJoinCode(
   table: TableDoc,
   ownerUid: string,
 ): Promise<TableDoc> {
-  if (table.joinCode) {
-    const codeSnap = await getDoc(doc(store, "joinCodes", table.joinCode));
-    if (!codeSnap.exists() && table.ownerId === ownerUid) {
-      await syncJoinCodeDoc(store, table);
+  let next = table;
+  // Older tables may predate archived fields; owner backfills once.
+  if (table.ownerId === ownerUid) {
+    const raw = await getDoc(doc(store, "tables", table.id));
+    const data = raw.data() ?? {};
+    if (!("archived" in data) || !("archivedAt" in data)) {
+      next = { ...next, archived: false, archivedAt: 0 };
+      await updateDoc(doc(store, "tables", table.id), tablePayload(next));
     }
-    return table;
   }
-  if (table.ownerId !== ownerUid) return table;
+  if (next.joinCode) {
+    const codeSnap = await getDoc(doc(store, "joinCodes", next.joinCode));
+    if (!codeSnap.exists() && next.ownerId === ownerUid) {
+      await syncJoinCodeDoc(store, next);
+    } else if (codeSnap.exists() && next.ownerId === ownerUid) {
+      const codeData = codeSnap.data();
+      if (codeData.archived !== next.archived) {
+        await syncJoinCodeDoc(store, next);
+      }
+    }
+    return next;
+  }
+  if (next.ownerId !== ownerUid) return next;
   const code = await allocateJoinCode(store);
-  const next = { ...table, joinCode: code };
-  await updateDoc(doc(store, "tables", table.id), tablePayload(next));
+  next = { ...next, joinCode: code };
+  await updateDoc(doc(store, "tables", next.id), tablePayload(next));
   await syncJoinCodeDoc(store, next);
   return next;
 }
@@ -464,6 +496,16 @@ function notConfiguredBackend(): Backend {
       missing();
     },
     async rotateJoinCode() {
+      missing();
+      return undefined as never;
+    },
+    async archiveTable() {
+      missing();
+    },
+    async restoreTable() {
+      missing();
+    },
+    async exportTable() {
       missing();
       return undefined as never;
     },
@@ -589,7 +631,11 @@ export function createBackend(): Backend {
         const normalized = cleanJoinCode(code);
         const snap = await getDoc(doc(store, "joinCodes", normalized));
         if (!snap.exists()) throw new Error("That join code could not be found.");
-        return readJoinCode(normalized, snap.data());
+        const peeked = readJoinCode(normalized, snap.data());
+        if (peeked.archived) {
+          throw new Error("That table is archived. Ask the owner to restore it before joining.");
+        }
+        return peeked;
       } catch (error) {
         throw friendly(error);
       }
@@ -840,6 +886,9 @@ export function createBackend(): Backend {
         const { db: store } = services();
         const opened = await this.openTable(tableId);
         if (opened.me.role !== "owner") throw new Error("Only the owner can change table settings.");
+        if (opened.table.archived) {
+          throw new Error("Restore this table before changing settings.");
+        }
         const nextLimit = cleanSeatLimit(seatLimit);
         if (nextLimit < opened.table.memberCount) {
           throw new Error("Seat limit cannot be below the people already at the table.");
@@ -849,6 +898,8 @@ export function createBackend(): Backend {
           name: cleanTableName(name),
           seatLimit: nextLimit,
           joinPolicy: cleanJoinPolicy(joinPolicy),
+          archived: false,
+          archivedAt: 0,
         };
         await updateDoc(doc(store, "tables", opened.table.id), tablePayload(next));
         await syncJoinCodeDoc(store, next);
@@ -873,6 +924,9 @@ export function createBackend(): Backend {
         const { db: store } = services();
         const opened = await this.openTable(tableId);
         if (opened.me.role !== "owner") throw new Error("Only the owner can make a new join code.");
+        if (opened.table.archived) {
+          throw new Error("Restore this table before making a new join code.");
+        }
         const nextCode = await allocateJoinCode(store, opened.table.joinCode);
         const next = { ...opened.table, joinCode: nextCode };
         const batch = writeBatch(store);
@@ -893,6 +947,81 @@ export function createBackend(): Backend {
           }),
         );
         return nextCode;
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async archiveTable(tableId) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const opened = await this.openTable(tableId);
+        if (opened.me.role !== "owner") throw new Error("Only the owner can archive this table.");
+        if (opened.table.archived) throw new Error("This table is already archived.");
+        const next: TableDoc = {
+          ...opened.table,
+          archived: true,
+          archivedAt: Date.now(),
+        };
+        await updateDoc(doc(store, "tables", opened.table.id), tablePayload(next));
+        await syncJoinCodeDoc(store, next);
+        await writeActivity(
+          store,
+          opened.table.id,
+          buildActivity({
+            type: "archived",
+            actorId: user.uid,
+            actorName: opened.me.displayName,
+            summary: `${opened.me.displayName} archived this table.`,
+          }),
+        );
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async restoreTable(tableId) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const opened = await this.openTable(tableId);
+        if (opened.me.role !== "owner") throw new Error("Only the owner can restore this table.");
+        if (!opened.table.archived) throw new Error("This table is already active.");
+        const next: TableDoc = {
+          ...opened.table,
+          archived: false,
+          archivedAt: 0,
+        };
+        await updateDoc(doc(store, "tables", opened.table.id), tablePayload(next));
+        await syncJoinCodeDoc(store, next);
+        await writeActivity(
+          store,
+          opened.table.id,
+          buildActivity({
+            type: "restored",
+            actorId: user.uid,
+            actorName: opened.me.displayName,
+            summary: `${opened.me.displayName} restored this table.`,
+          }),
+        );
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async exportTable(tableId) {
+      try {
+        const opened = await this.openTable(tableId);
+        const exportedAt = Date.now();
+        const payload = buildTableExport({
+          table: opened.table,
+          members: opened.members,
+          notices: opened.notices,
+          activity: opened.activity,
+          files: opened.files,
+          exportedAt,
+        });
+        const filename = tableExportFilename(opened.table, exportedAt);
+        downloadTextFile(filename, tableExportJson(payload));
+        return { filename };
       } catch (error) {
         throw friendly(error);
       }
@@ -952,6 +1081,9 @@ export function createBackend(): Backend {
             throw new Error("That table could not be found.");
           }
           const table = readTable(tableSnap.id, tableSnap.data());
+          if (table.archived) {
+            throw new Error("That table is archived. Ask the owner to restore it before joining.");
+          }
           const memberRef = doc(store, "tables", table.id, "members", user.uid);
           const existing = await tx.get(memberRef);
           if (existing.exists()) throw new Error("You are already at this table.");

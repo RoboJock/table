@@ -1,6 +1,6 @@
 # Table
 
-A shared table for a small group. The owner sets a seat limit and chooses **Invite only** or **First come, first serve**. People join with a **6-character join code** instead of pasting account ids. The room updates **live** as seats change, shows **who’s here now**, and an **activity feed** records joins, leaves, notices, and settings changes.
+A shared table for a small group. The owner sets a seat limit and chooses **Invite only** or **First come, first serve**. People join with a **6-character join code** instead of pasting account ids. The room updates **live** as seats change, shows **who’s here now**, and an **activity feed** records joins, leaves, notices, and settings changes. Members can **export** a JSON copy of the table. Owners can **archive** a table (soft delete) and restore it later, or delete forever.
 
 Members edit only their own seat. Signed-out visitors get nothing.
 
@@ -17,7 +17,7 @@ The Firebase project is `shared-table-b46f`. The public site is [https://shared-
 1. Product: shared table with a max member count; share a join code; live member list + activity feed; members edit only their own seat; members can ask the server to email a notice.
 
 2. Collections:
-   - `tables/{id}` → `name`, `ownerId`, `joinCode`, `seatLimit`, `joinPolicy` (`inviteOnly` | `firstComeFirstServe`), `memberCount`, `createdAt`
+   - `tables/{id}` → `name`, `ownerId`, `joinCode`, `seatLimit`, `joinPolicy`, `memberCount`, `archived`, `archivedAt`, `createdAt`
    - `joinCodes/{code}` → public peek fields for a code (`tableId`, `name`, seats, policy, `ownerId`)
    - `tables/{id}/members/{uid}` → `displayName`, `role`, `seatNote`, `email`, `joinedAt`
    - `tables/{id}/notices/{noticeId}` → `subject`, `body`, `sentBy`, `sentAt`, `to`

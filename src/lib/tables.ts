@@ -27,12 +27,36 @@ export function joinCodePayload(table: TableDoc): Omit<JoinCodeDoc, "code"> {
     memberCount: table.memberCount,
     joinPolicy: table.joinPolicy,
     ownerId: table.ownerId,
+    archived: table.archived,
   };
 }
 
-export function canJoinWithCode(table: Pick<TableDoc, "memberCount" | "seatLimit">, alreadyMember: boolean): boolean {
+export function canJoinWithCode(
+  table: Pick<TableDoc, "memberCount" | "seatLimit" | "archived">,
+  alreadyMember: boolean,
+): boolean {
   if (alreadyMember) return false;
+  if (table.archived) return false;
   return seatsRemaining(table as TableDoc) > 0;
+}
+
+export function isTableArchived(table: Pick<TableDoc, "archived">): boolean {
+  return table.archived === true;
+}
+
+export function partitionOwnedTables(tables: TableDoc[]): {
+  active: TableDoc[];
+  archived: TableDoc[];
+} {
+  const active: TableDoc[] = [];
+  const archived: TableDoc[] = [];
+  for (const table of tables) {
+    if (table.archived) archived.push(table);
+    else active.push(table);
+  }
+  active.sort((a, b) => b.createdAt - a.createdAt);
+  archived.sort((a, b) => (b.archivedAt || b.createdAt) - (a.archivedAt || a.createdAt));
+  return { active, archived };
 }
 
 export function cleanTableName(name: string): string {
@@ -136,6 +160,8 @@ export function buildTable(input: {
   joinPolicy: JoinPolicy;
   joinCode?: string;
   memberCount?: number;
+  archived?: boolean;
+  archivedAt?: number;
   createdAt?: number;
 }): TableDoc {
   const seatLimit = cleanSeatLimit(input.seatLimit);
@@ -143,6 +169,8 @@ export function buildTable(input: {
   if (memberCount < 1 || memberCount > seatLimit) {
     throw new Error("Member count must fit inside the seat limit.");
   }
+  const archived = input.archived === true;
+  const archivedAt = archived ? (input.archivedAt ?? Date.now()) : 0;
   return {
     id: input.id,
     name: cleanTableName(input.name),
@@ -151,6 +179,8 @@ export function buildTable(input: {
     seatLimit,
     joinPolicy: cleanJoinPolicy(input.joinPolicy),
     memberCount,
+    archived,
+    archivedAt,
     createdAt: input.createdAt ?? Date.now(),
   };
 }
@@ -199,6 +229,8 @@ export function tablePayload(table: TableDoc): Omit<TableDoc, "id"> {
     seatLimit: table.seatLimit,
     joinPolicy: table.joinPolicy,
     memberCount: table.memberCount,
+    archived: table.archived,
+    archivedAt: table.archivedAt,
     createdAt: table.createdAt,
   };
 }
@@ -211,6 +243,8 @@ export function tableFieldsForCountBump(table: TableDoc, memberCount: number): O
     seatLimit: table.seatLimit,
     joinPolicy: table.joinPolicy,
     memberCount,
+    archived: table.archived,
+    archivedAt: table.archivedAt,
     createdAt: table.createdAt,
   };
 }
