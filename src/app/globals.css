@@ -73,6 +73,16 @@ button {
   padding: 1.5rem 0 3rem;
 }
 
+.offline-banner {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--spruce) 14%, var(--paper));
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
 .topbar {
   display: flex;
   align-items: center;

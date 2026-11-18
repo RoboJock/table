@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { createBackend, type Backend } from "../lib/backend";
+import { connectionMessage, type ConnectionState } from "../lib/offline";
 import type { AppUser } from "../lib/types";
 
 type Ctx = {
@@ -24,6 +25,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [ready, setReady] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [connection, setConnection] = useState<ConnectionState>({ online: true, synced: true });
 
   useEffect(() => {
     const saved = document.documentElement.dataset.theme;
@@ -35,8 +37,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setUser(next);
       setReady(true);
     });
-    return () => stop();
+    const stopConnection = backend.watchConnection(setConnection);
+    return () => {
+      stop();
+      stopConnection();
+    };
   }, [backend]);
+
+  const banner = connectionMessage(connection);
 
   return (
     <TableContext.Provider value={{ backend, user, ready }}>
@@ -78,6 +86,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
           </nav>
         </header>
+        {banner ? (
+          <p className="offline-banner" role="status">
+            {banner}
+          </p>
+        ) : null}
         {children}
       </div>
     </TableContext.Provider>

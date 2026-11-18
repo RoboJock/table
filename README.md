@@ -1,6 +1,6 @@
 # Table
 
-A shared table for a small group. The owner sets a seat limit and chooses **Invite only** or **First come, first serve**. People join with a **6-character join code** instead of pasting account ids. The room updates **live** as seats change, shows **who’s here now**, and an **activity feed** records joins, leaves, notices, and settings changes. Members can **export** a JSON copy of the table. Owners can **archive** a table (soft delete) and restore it later, or delete forever.
+A shared table for a small group. The owner sets a seat limit and chooses **Invite only** or **First come, first serve**. People join with a **6-character join code** instead of pasting account ids. The room updates **live** as seats change, shows **who’s here now**, and an **activity feed** records joins, leaves, notices, and settings changes. Members can **export** a JSON copy of the table. Owners can **archive** a table (soft delete) and restore it later, or delete forever. Firestore keeps a local cache so a short disconnect still lets you read and edit; a banner appears until you are back online and synced.
 
 Members edit only their own seat. Signed-out visitors get nothing.
 

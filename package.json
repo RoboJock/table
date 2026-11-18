@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsx --test src/lib/tables.test.ts src/lib/permissions.test.ts src/lib/files.test.ts src/lib/activity.test.ts src/lib/presence.test.ts src/lib/export.test.ts",
+    "test": "tsx --test src/lib/tables.test.ts src/lib/permissions.test.ts src/lib/files.test.ts src/lib/activity.test.ts src/lib/presence.test.ts src/lib/export.test.ts src/lib/offline.test.ts",
     "test:worker": "npm --prefix worker test",
     "deploy:worker": "npm --prefix worker run deploy"
   },

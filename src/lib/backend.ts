@@ -16,7 +16,11 @@ import {
   getDoc,
   getDocs,
   getFirestore,
+  initializeFirestore,
   onSnapshot,
+  onSnapshotsInSync,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   query,
   runTransaction,
   setDoc,
@@ -69,6 +73,7 @@ import {
   tableFieldsForCountBump,
   tablePayload,
 } from "./tables";
+import type { ConnectionState } from "./offline";
 import type {
   ActivityDoc,
   AppUser,
@@ -100,6 +105,7 @@ export type TableRoomSnapshot = {
 export type Backend = {
   configured: boolean;
   subscribe(listener: (user: AppUser | null) => void): Unsubscribe | (() => void);
+  watchConnection(listener: (state: ConnectionState) => void): Unsubscribe | (() => void);
   register(email: string, password: string, name: string): Promise<void>;
   signIn(email: string, password: string): Promise<void>;
   signOut(): Promise<void>;
@@ -193,12 +199,26 @@ let firebaseApp: FirebaseApp | undefined;
 let auth: Auth | undefined;
 let db: Firestore | undefined;
 
+function openFirestore(app: FirebaseApp): Firestore {
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    try {
+      return getFirestore(app);
+    } catch {
+      return initializeFirestore(app, { localCache: persistentLocalCache() });
+    }
+  }
+}
+
 function services() {
   const config = firebasePublicConfig();
   if (!config) throw new Error("Firebase is not configured. Copy .env.example to .env.local.");
   firebaseApp ??= initializeApp(config);
   auth ??= getAuth(firebaseApp);
-  db ??= getFirestore(firebaseApp);
+  db ??= openFirestore(firebaseApp);
   return { auth, db };
 }
 
@@ -460,6 +480,10 @@ function notConfiguredBackend(): Backend {
       listener(null);
       return () => undefined;
     },
+    watchConnection(listener) {
+      listener({ online: true, synced: true });
+      return () => undefined;
+    },
     async register() {
       missing();
     },
@@ -565,6 +589,37 @@ export function createBackend(): Backend {
       return onAuthStateChanged(current, (user) => {
         listener(user ? asUser(user) : null);
       });
+    },
+    watchConnection(listener) {
+      if (typeof window === "undefined") {
+        listener({ online: true, synced: true });
+        return () => undefined;
+      }
+      const { db: store } = services();
+      let online = navigator.onLine;
+      let synced = true;
+      const emit = () => listener({ online, synced });
+      const markOnline = () => {
+        online = true;
+        emit();
+      };
+      const markOffline = () => {
+        online = false;
+        synced = false;
+        emit();
+      };
+      window.addEventListener("online", markOnline);
+      window.addEventListener("offline", markOffline);
+      const stopSync = onSnapshotsInSync(store, () => {
+        if (online) synced = true;
+        emit();
+      });
+      emit();
+      return () => {
+        window.removeEventListener("online", markOnline);
+        window.removeEventListener("offline", markOffline);
+        stopSync();
+      };
     },
     async register(email, password, name) {
       try {
