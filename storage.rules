@@ -1,0 +1,48 @@
+rules_version = '2';
+// Canonical Storage rules for Binder. Table currently stores file bytes in
+// Cloudflare R2 (free) behind the Worker, which applies the same checks.
+// If Firebase Storage is enabled later on Blaze, deploy these beside firestore.rules.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberPath(tableId) {
+      return /databases/(default)/documents/tables/$(tableId)/members/$(request.auth.uid);
+    }
+
+    function isMember(tableId) {
+      return signedIn() && firestore.exists(memberPath(tableId));
+    }
+
+    function fileDoc(tableId, fileId) {
+      return firestore.get(/databases/(default)/documents/tables/$(tableId)/files/$(fileId)).data;
+    }
+
+    function canReadFile(tableId, fileId) {
+      return isMember(tableId) && (
+        fileDoc(tableId, fileId).ownerId == request.auth.uid
+        || fileDoc(tableId, fileId).visibility == 'table'
+        || (
+          fileDoc(tableId, fileId).visibility == 'shared'
+          && request.auth.uid in fileDoc(tableId, fileId).sharedWith
+        )
+      );
+    }
+
+    match /tables/{tableId}/files/{fileId} {
+      allow read: if canReadFile(tableId, fileId);
+
+      allow create: if isMember(tableId)
+        && request.resource.size > 0
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp|gif)|application/pdf');
+
+      allow update: if false;
+
+      allow delete: if isMember(tableId)
+        && fileDoc(tableId, fileId).ownerId == request.auth.uid;
+    }
+  }
+}

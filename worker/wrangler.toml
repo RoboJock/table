@@ -6,6 +6,10 @@ account_id = "d8e469cf6f0c4cb4912aa00235620ba2"
 # Set with:
 #   npx wrangler secret put RESEND_API_KEY
 #   npx wrangler secret put RESEND_FROM
-# FIREBASE_PROJECT_ID can stay as a plain var (public).
+# After enabling R2 in the Cloudflare dashboard, the FILES bucket stores uploads.
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "table-files"
+
 [vars]
 FIREBASE_PROJECT_ID = "shared-table-b46f"

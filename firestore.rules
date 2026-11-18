@@ -118,6 +118,76 @@ service cloud.firestore {
         && request.resource.data.to.size() <= 40;
     }
 
+    function fileNameOk(value) {
+      return value is string && value.size() >= 1 && value.size() <= 80;
+    }
+
+    function fileTypeOk(value) {
+      return value in [
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'image/gif',
+        'application/pdf'
+      ];
+    }
+
+    function fileSizeOk(value) {
+      return (value is int || value is float) && value > 0 && value <= 5 * 1024 * 1024;
+    }
+
+    function fileVisibilityOk(value) {
+      return value in ['private', 'table', 'shared'];
+    }
+
+    function fileCreateOk() {
+      return request.resource.data.keys().hasOnly([
+          'name', 'ownerId', 'contentType', 'size', 'visibility', 'sharedWith', 'createdAt'
+        ])
+        && request.resource.data.ownerId == request.auth.uid
+        && fileNameOk(request.resource.data.name)
+        && fileTypeOk(request.resource.data.contentType)
+        && fileSizeOk(request.resource.data.size)
+        && fileVisibilityOk(request.resource.data.visibility)
+        && request.resource.data.sharedWith is list
+        && request.resource.data.sharedWith.size() <= 40
+        && !(request.auth.uid in request.resource.data.sharedWith)
+        && (
+          request.resource.data.visibility != 'shared'
+          || request.resource.data.sharedWith.size() >= 1
+        )
+        && numberOk(request.resource.data.createdAt);
+    }
+
+    function fileUpdateOk() {
+      return resource.data.ownerId == request.auth.uid
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.contentType == resource.data.contentType
+        && request.resource.data.size == resource.data.size
+        && request.resource.data.keys().hasOnly([
+          'name', 'ownerId', 'contentType', 'size', 'visibility', 'sharedWith', 'createdAt'
+        ])
+        && fileNameOk(request.resource.data.name)
+        && fileVisibilityOk(request.resource.data.visibility)
+        && request.resource.data.sharedWith is list
+        && request.resource.data.sharedWith.size() <= 40
+        && !(request.auth.uid in request.resource.data.sharedWith)
+        && (
+          request.resource.data.visibility != 'shared'
+          || request.resource.data.sharedWith.size() >= 1
+        );
+    }
+
+    function fileReadOk() {
+      return resource.data.ownerId == request.auth.uid
+        || resource.data.visibility == 'table'
+        || (
+          resource.data.visibility == 'shared'
+          && request.auth.uid in resource.data.sharedWith
+        );
+    }
+
     function ownerTableUpdateOk(tableId) {
       return isOwner(tableId)
         && request.resource.data.ownerId == resource.data.ownerId
@@ -181,6 +251,17 @@ service cloud.firestore {
         allow create: if isMember(tableId) && noticeCreateOk();
         allow update: if false;
         allow delete: if isOwner(tableId);
+      }
+
+      match /files/{fileId} {
+        allow read: if isMember(tableId) && fileReadOk();
+
+        allow create: if isMember(tableId) && fileCreateOk();
+
+        allow update: if isMember(tableId) && fileUpdateOk();
+
+        allow delete: if isMember(tableId)
+          && resource.data.ownerId == request.auth.uid;
       }
     }
   }

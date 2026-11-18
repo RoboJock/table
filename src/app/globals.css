@@ -377,6 +377,45 @@ label.choice .muted {
   border-top: 1px solid var(--line);
 }
 
+.file-list {
+  gap: 0.85rem;
+}
+
+.file-card {
+  border-top: 1px solid var(--line);
+  padding-top: 0.85rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.file-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.file-card select,
+label.choice input[type="checkbox"] {
+  width: auto;
+}
+
+.file-card select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  background: color-mix(in srgb, var(--panel) 88%, var(--paper));
+  color: var(--ink);
+}
+
+input[type="file"] {
+  padding: 0.45rem 0;
+  border: 0;
+  background: transparent;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;

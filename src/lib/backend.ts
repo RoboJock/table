@@ -25,6 +25,15 @@ import {
   type Firestore,
 } from "firebase/firestore";
 import {
+  assertAllowedFile,
+  buildFileDoc,
+  cleanFileVisibility,
+  cleanSharedWith,
+  filePayload,
+  newFileId,
+  sortFiles,
+} from "./files";
+import {
   buildMember,
   buildTable,
   cleanDisplayName,
@@ -41,7 +50,15 @@ import {
   sortNotices,
   tablePayload,
 } from "./tables";
-import type { AppUser, JoinPolicy, MemberDoc, NoticeDoc, TableDoc } from "./types";
+import type {
+  AppUser,
+  FileDoc,
+  FileVisibility,
+  JoinPolicy,
+  MemberDoc,
+  NoticeDoc,
+  TableDoc,
+} from "./types";
 
 export type SendNoticeResult = {
   noticeId: string;
@@ -61,6 +78,7 @@ export type Backend = {
     members: MemberDoc[];
     me: MemberDoc;
     notices: NoticeDoc[];
+    files: FileDoc[];
   }>;
   createTable(name: string, seatLimit: number, joinPolicy: JoinPolicy): Promise<TableDoc>;
   updateTableSettings(
@@ -76,6 +94,20 @@ export type Backend = {
   leaveTable(tableId: string): Promise<void>;
   updateSeat(tableId: string, displayName: string, seatNote: string, email: string): Promise<void>;
   sendNotice(tableId: string, subject: string, body: string): Promise<SendNoticeResult>;
+  uploadFile(
+    tableId: string,
+    file: File,
+    visibility: FileVisibility,
+    sharedWith: string[],
+  ): Promise<FileDoc>;
+  updateFileSharing(
+    tableId: string,
+    fileId: string,
+    visibility: FileVisibility,
+    sharedWith: string[],
+  ): Promise<void>;
+  deleteFile(tableId: string, fileId: string): Promise<void>;
+  openFile(tableId: string, fileId: string): Promise<void>;
 };
 
 export function firebasePublicConfig(): Record<string, string> | null {
@@ -210,6 +242,44 @@ function readNotice(id: string, data: Record<string, unknown>): NoticeDoc {
   };
 }
 
+function readFile(id: string, data: Record<string, unknown>): FileDoc {
+  if (
+    typeof data.name !== "string" ||
+    typeof data.ownerId !== "string" ||
+    typeof data.contentType !== "string" ||
+    typeof data.size !== "number" ||
+    typeof data.createdAt !== "number" ||
+    (data.visibility !== "private" && data.visibility !== "table" && data.visibility !== "shared") ||
+    !Array.isArray(data.sharedWith)
+  ) {
+    throw new Error("That file document is incomplete.");
+  }
+  return {
+    id,
+    name: data.name,
+    ownerId: data.ownerId,
+    contentType: data.contentType,
+    size: data.size,
+    visibility: data.visibility,
+    sharedWith: data.sharedWith.filter((item): item is string => typeof item === "string"),
+    createdAt: data.createdAt,
+  };
+}
+
+async function listAccessibleFiles(store: Firestore, tableId: string, uid: string): Promise<FileDoc[]> {
+  const filesRef = collection(store, "tables", tableId, "files");
+  const [owned, tableWide, shared] = await Promise.all([
+    getDocs(query(filesRef, where("ownerId", "==", uid))),
+    getDocs(query(filesRef, where("visibility", "==", "table"))),
+    getDocs(query(filesRef, where("visibility", "==", "shared"), where("sharedWith", "array-contains", uid))),
+  ]);
+  const map = new Map<string, FileDoc>();
+  for (const snap of [...owned.docs, ...tableWide.docs, ...shared.docs]) {
+    map.set(snap.id, readFile(snap.id, snap.data()));
+  }
+  return sortFiles([...map.values()]);
+}
+
 function notConfiguredBackend(): Backend {
   const missing = () => {
     throw new Error("Firebase is not configured. Copy .env.example to .env.local.");
@@ -270,6 +340,19 @@ function notConfiguredBackend(): Backend {
     async sendNotice() {
       missing();
       return undefined as never;
+    },
+    async uploadFile() {
+      missing();
+      return undefined as never;
+    },
+    async updateFileSharing() {
+      missing();
+    },
+    async deleteFile() {
+      missing();
+    },
+    async openFile() {
+      missing();
     },
   };
 }
@@ -355,8 +438,9 @@ export function createBackend(): Backend {
         if (!me) throw new Error("You are not a member of this table.");
         const noticesSnap = await getDocs(collection(store, "tables", id, "notices"));
         const notices = sortNotices(noticesSnap.docs.map((item) => readNotice(item.id, item.data())));
+        const files = await listAccessibleFiles(store, id, user.uid);
         rememberTableId(user.uid, id);
-        return { table, members, me, notices };
+        return { table, members, me, notices, files };
       } catch (error) {
         throw friendly(error);
       }
@@ -651,6 +735,139 @@ export function createBackend(): Backend {
           noticeId: payload.noticeId,
           recipientCount: payload.recipientCount,
         };
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async uploadFile(tableId, file, visibility, sharedWith) {
+      const user = requireUser();
+      const { db: store } = services();
+      const base = noticeWorkerUrl();
+      if (!base) throw new Error("File storage is not configured yet.");
+      const checked = assertAllowedFile({ name: file.name, type: file.type, size: file.size });
+      const docFile = buildFileDoc({
+        id: newFileId(),
+        name: checked.name,
+        ownerId: user.uid,
+        contentType: checked.contentType,
+        size: checked.size,
+        visibility: cleanFileVisibility(visibility),
+        sharedWith,
+      });
+      const fileRef = doc(store, "tables", tableId.trim(), "files", docFile.id);
+      await setDoc(fileRef, filePayload(docFile));
+      try {
+        const token = await user.getIdToken();
+        const response = await fetch(`${base}/files/upload`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": checked.contentType,
+            "X-Table-Id": tableId.trim(),
+            "X-File-Id": docFile.id,
+          },
+          body: file,
+        });
+        const payload = (await response.json().catch(() => ({}))) as { error?: unknown };
+        if (!response.ok) {
+          throw new Error(
+            typeof payload.error === "string" && payload.error
+              ? payload.error
+              : "That file could not be uploaded.",
+          );
+        }
+        return docFile;
+      } catch (error) {
+        try {
+          await deleteDoc(fileRef);
+        } catch {
+          // Best-effort metadata cleanup if bytes never landed.
+        }
+        throw friendly(error);
+      }
+    },
+    async updateFileSharing(tableId, fileId, visibility, sharedWith) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const fileRef = doc(store, "tables", tableId.trim(), "files", fileId.trim());
+        const snap = await getDoc(fileRef);
+        if (!snap.exists()) throw new Error("That file could not be found.");
+        const current = readFile(snap.id, snap.data());
+        if (current.ownerId !== user.uid) throw new Error("Only the uploader can change sharing.");
+        const nextVisibility = cleanFileVisibility(visibility);
+        const nextShared =
+          nextVisibility === "shared" ? cleanSharedWith(sharedWith, user.uid) : [];
+        if (nextVisibility === "shared" && nextShared.length === 0) {
+          throw new Error("Pick at least one person to share with, or choose another option.");
+        }
+        await updateDoc(fileRef, {
+          name: current.name,
+          ownerId: current.ownerId,
+          contentType: current.contentType,
+          size: current.size,
+          visibility: nextVisibility,
+          sharedWith: nextShared,
+          createdAt: current.createdAt,
+        });
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async deleteFile(tableId, fileId) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const base = noticeWorkerUrl();
+        if (!base) throw new Error("File storage is not configured yet.");
+        const fileRef = doc(store, "tables", tableId.trim(), "files", fileId.trim());
+        const snap = await getDoc(fileRef);
+        if (!snap.exists()) throw new Error("That file could not be found.");
+        const current = readFile(snap.id, snap.data());
+        if (current.ownerId !== user.uid) throw new Error("Only the uploader can delete this file.");
+        const token = await user.getIdToken();
+        const response = await fetch(
+          `${base}/files/object?tableId=${encodeURIComponent(tableId.trim())}&fileId=${encodeURIComponent(fileId.trim())}`,
+          {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${token}` },
+          },
+        );
+        const payload = (await response.json().catch(() => ({}))) as { error?: unknown };
+        if (!response.ok) {
+          throw new Error(
+            typeof payload.error === "string" && payload.error
+              ? payload.error
+              : "That file could not be deleted.",
+          );
+        }
+        await deleteDoc(fileRef);
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async openFile(tableId, fileId) {
+      try {
+        const user = requireUser();
+        const base = noticeWorkerUrl();
+        if (!base) throw new Error("File storage is not configured yet.");
+        const token = await user.getIdToken();
+        const response = await fetch(
+          `${base}/files/download?tableId=${encodeURIComponent(tableId.trim())}&fileId=${encodeURIComponent(fileId.trim())}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: unknown };
+          throw new Error(
+            typeof payload.error === "string" && payload.error
+              ? payload.error
+              : "That file could not be opened.",
+          );
+        }
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
       } catch (error) {
         throw friendly(error);
       }

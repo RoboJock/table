@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { fileVisibilityLabel, formatFileSize } from "../lib/files";
 import { joinPolicyLabel, seatsRemaining } from "../lib/tables";
-import type { JoinPolicy, MemberDoc, NoticeDoc, TableDoc } from "../lib/types";
+import type { FileDoc, FileVisibility, JoinPolicy, MemberDoc, NoticeDoc, TableDoc } from "../lib/types";
 import { useTableApp } from "./AppShell";
 
 export function TableRoom() {
@@ -15,6 +16,7 @@ export function TableRoom() {
   const [table, setTable] = useState<TableDoc | null>(null);
   const [members, setMembers] = useState<MemberDoc[]>([]);
   const [notices, setNotices] = useState<NoticeDoc[]>([]);
+  const [files, setFiles] = useState<FileDoc[]>([]);
   const [me, setMe] = useState<MemberDoc | null>(null);
   const [rename, setRename] = useState("");
   const [seatLimit, setSeatLimit] = useState("4");
@@ -26,6 +28,9 @@ export function TableRoom() {
   const [inviteName, setInviteName] = useState("");
   const [noticeSubject, setNoticeSubject] = useState("");
   const [noticeBody, setNoticeBody] = useState("");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadVisibility, setUploadVisibility] = useState<FileVisibility>("private");
+  const [uploadSharedWith, setUploadSharedWith] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -35,6 +40,7 @@ export function TableRoom() {
     setTable(opened.table);
     setMembers(opened.members);
     setNotices(opened.notices);
+    setFiles(opened.files);
     setMe(opened.me);
     setRename(opened.table.name);
     setSeatLimit(String(opened.table.seatLimit));
@@ -53,6 +59,7 @@ export function TableRoom() {
       setTable(null);
       setMembers([]);
       setNotices([]);
+      setFiles([]);
       setMe(null);
       setMessage(error instanceof Error ? error.message : "Could not open this table.");
     });
@@ -317,6 +324,196 @@ export function TableRoom() {
           </div>
         ) : (
           <p className="muted">No notices sent yet.</p>
+        )}
+      </section>
+
+      <section className="panel stack">
+        <h2>Files</h2>
+        <p className="muted">
+          Upload an image or PDF up to 5 MB. Keep it only for you, open it to the whole table, or share
+          it with people you choose.
+        </p>
+        <form
+          className="stack"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!uploadFile) {
+              setMessage("Choose a file first.");
+              return;
+            }
+            void run(async () => {
+              await backend.uploadFile(table.id, uploadFile, uploadVisibility, uploadSharedWith);
+              setUploadFile(null);
+              setUploadVisibility("private");
+              setUploadSharedWith([]);
+            }, "File uploaded.");
+          }}
+        >
+          <label>
+            Choose file
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
+              onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+            />
+          </label>
+          <fieldset className="join-policy">
+            <legend>Who can open it</legend>
+            <label className="choice">
+              <input
+                type="radio"
+                name="fileVisibility"
+                checked={uploadVisibility === "private"}
+                onChange={() => {
+                  setUploadVisibility("private");
+                  setUploadSharedWith([]);
+                }}
+              />
+              <span>
+                <strong>Only you</strong>
+              </span>
+            </label>
+            <label className="choice">
+              <input
+                type="radio"
+                name="fileVisibility"
+                checked={uploadVisibility === "table"}
+                onChange={() => {
+                  setUploadVisibility("table");
+                  setUploadSharedWith([]);
+                }}
+              />
+              <span>
+                <strong>Everyone at this table</strong>
+              </span>
+            </label>
+            <label className="choice">
+              <input
+                type="radio"
+                name="fileVisibility"
+                checked={uploadVisibility === "shared"}
+                onChange={() => setUploadVisibility("shared")}
+              />
+              <span>
+                <strong>Shared with selected people</strong>
+              </span>
+            </label>
+          </fieldset>
+          {uploadVisibility === "shared" ? (
+            <div className="stack">
+              <p className="muted">Choose who else can open it:</p>
+              {members
+                .filter((member) => member.uid !== me.uid)
+                .map((member) => (
+                  <label className="choice" key={member.uid}>
+                    <input
+                      type="checkbox"
+                      checked={uploadSharedWith.includes(member.uid)}
+                      onChange={(event) => {
+                        setUploadSharedWith((current) =>
+                          event.target.checked
+                            ? [...current, member.uid]
+                            : current.filter((uid) => uid !== member.uid),
+                        );
+                      }}
+                    />
+                    <span>{member.displayName}</span>
+                  </label>
+                ))}
+            </div>
+          ) : null}
+          <button type="submit" disabled={busy || !uploadFile}>
+            Upload file
+          </button>
+        </form>
+        {files.length === 0 ? (
+          <p className="muted">No files you can open yet.</p>
+        ) : (
+          <div className="stack file-list">
+            {files.map((file) => {
+              const owner = members.find((member) => member.uid === file.ownerId);
+              const mine = file.ownerId === me.uid;
+              return (
+                <article className="file-card" key={file.id}>
+                  <header>
+                    <strong>{file.name}</strong>
+                    <span className="muted">{formatFileSize(file.size)}</span>
+                  </header>
+                  <p className="muted">
+                    {fileVisibilityLabel(file.visibility)}
+                    {owner ? ` · from ${owner.displayName}` : ""}
+                  </p>
+                  <div className="row">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => {
+                        void run(() => backend.openFile(table.id, file.id), "Opening file…");
+                      }}
+                    >
+                      Open
+                    </button>
+                    {mine ? (
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={busy}
+                        onClick={() => {
+                          void run(() => backend.deleteFile(table.id, file.id), "File deleted.");
+                        }}
+                      >
+                        Delete
+                      </button>
+                    ) : null}
+                  </div>
+                  {mine ? (
+                    <form
+                      className="stack"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const form = new FormData(event.currentTarget);
+                        const nextVisibility = String(form.get("visibility") || "private") as FileVisibility;
+                        const nextShared = members
+                          .filter((member) => member.uid !== me.uid && form.get(`share-${member.uid}`) === "on")
+                          .map((member) => member.uid);
+                        void run(
+                          () => backend.updateFileSharing(table.id, file.id, nextVisibility, nextShared),
+                          "Sharing updated.",
+                        );
+                      }}
+                    >
+                      <label>
+                        Change who can open it
+                        <select name="visibility" defaultValue={file.visibility}>
+                          <option value="private">Only you</option>
+                          <option value="table">Everyone at this table</option>
+                          <option value="shared">Shared with selected people</option>
+                        </select>
+                      </label>
+                      <div className="stack">
+                        {members
+                          .filter((member) => member.uid !== me.uid)
+                          .map((member) => (
+                            <label className="choice" key={member.uid}>
+                              <input
+                                type="checkbox"
+                                name={`share-${member.uid}`}
+                                defaultChecked={file.sharedWith.includes(member.uid)}
+                              />
+                              <span>{member.displayName}</span>
+                            </label>
+                          ))}
+                      </div>
+                      <button type="submit" className="secondary" disabled={busy}>
+                        Save sharing
+                      </button>
+                    </form>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
         )}
       </section>
 

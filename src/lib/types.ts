@@ -38,3 +38,16 @@ export type NoticeDoc = {
   sentAt: number;
   to: string[];
 };
+
+export type FileVisibility = "private" | "table" | "shared";
+
+export type FileDoc = {
+  id: string;
+  name: string;
+  ownerId: string;
+  contentType: string;
+  size: number;
+  visibility: FileVisibility;
+  sharedWith: string[];
+  createdAt: number;
+};

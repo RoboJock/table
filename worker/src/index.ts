@@ -11,6 +11,7 @@ export type Env = {
   FIREBASE_PROJECT_ID: string;
   RESEND_API_KEY: string;
   RESEND_FROM: string;
+  FILES?: R2Bucket;
 };
 
 type SendBody = {
@@ -18,6 +19,15 @@ type SendBody = {
   subject?: unknown;
   body?: unknown;
 };
+
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+]);
 
 const googleJwks = createRemoteJWKSet(
   new URL("https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"),
@@ -30,53 +40,75 @@ export default {
     }
 
     const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/") {
-      return json({ ok: true, service: "table-notice" }, 200, request);
-    }
-
-    if (request.method !== "POST" || url.pathname !== "/sendNotice") {
-      return json({ error: "Not found." }, 404, request);
-    }
-
     try {
-      return await handleSendNotice(request, env);
+      if (request.method === "GET" && url.pathname === "/") {
+        return json({ ok: true, service: "table-notice", files: Boolean(env.FILES) }, 200, request);
+      }
+      if (request.method === "POST" && url.pathname === "/sendNotice") {
+        return await handleSendNotice(request, env);
+      }
+      if (request.method === "POST" && url.pathname === "/files/upload") {
+        return await handleFileUpload(request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/files/download") {
+        return await handleFileDownload(request, env, url);
+      }
+      if (request.method === "DELETE" && url.pathname === "/files/object") {
+        return await handleFileDelete(request, env, url);
+      }
+      return json({ error: "Not found." }, 404, request);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Something went wrong.";
       const status =
         message === "Sign in first."
           ? 401
-          : message.startsWith("Only table members")
+          : message.startsWith("Only table members") || message.includes("cannot open")
             ? 403
             : message.includes("email for reminders")
               ? 409
               : message.includes("could not be found")
                 ? 404
-                : message.includes("characters") || message.includes("table id") || message.includes("email address")
+                : message.includes("5 MB") ||
+                    message.includes("image") ||
+                    message.includes("characters") ||
+                    message.includes("table id") ||
+                    message.includes("email address") ||
+                    message.includes("file id")
                   ? 400
-                  : 500;
+                  : message.includes("not configured")
+                    ? 503
+                    : 500;
       return json({ error: message }, status, request);
     }
   },
 };
 
-async function handleSendNotice(request: Request, env: Env): Promise<Response> {
+async function requireUid(request: Request, env: Env): Promise<{ uid: string; idToken: string }> {
   if (!env.FIREBASE_PROJECT_ID) throw new Error("Firebase project is not configured on the server.");
-  if (!env.RESEND_API_KEY || !env.RESEND_FROM) {
-    throw new Error("Email sending is not configured on the server.");
-  }
-
   const authHeader = request.headers.get("Authorization") || "";
   const match = /^Bearer\s+(.+)$/i.exec(authHeader);
   if (!match) throw new Error("Sign in first.");
   const idToken = match[1];
-
   const verified = await jwtVerify(idToken, googleJwks, {
     issuer: `https://securetoken.google.com/${env.FIREBASE_PROJECT_ID}`,
     audience: env.FIREBASE_PROJECT_ID,
   });
   const uid = typeof verified.payload.user_id === "string" ? verified.payload.user_id : "";
   if (!uid) throw new Error("Sign in first.");
+  return { uid, idToken };
+}
 
+async function requireMember(projectId: string, idToken: string, uid: string, tableId: string) {
+  const member = await firestoreGet(projectId, idToken, `tables/${tableId}/members/${uid}`);
+  if (!member) throw new Error("Only table members can use files at this table.");
+  return member;
+}
+
+async function handleSendNotice(request: Request, env: Env): Promise<Response> {
+  if (!env.RESEND_API_KEY || !env.RESEND_FROM) {
+    throw new Error("Email sending is not configured on the server.");
+  }
+  const { uid, idToken } = await requireUid(request, env);
   const payload = (await request.json()) as SendBody;
   const tableId = typeof payload.tableId === "string" ? payload.tableId.trim() : "";
   if (!tableId) throw new Error("Choose a table id.");
@@ -132,6 +164,102 @@ async function handleSendNotice(request: Request, env: Env): Promise<Response> {
   return json({ noticeId, recipientCount: recipients.length }, 200, request);
 }
 
+async function handleFileUpload(request: Request, env: Env): Promise<Response> {
+  if (!env.FILES) throw new Error("File storage is not configured on the server.");
+  const { uid, idToken } = await requireUid(request, env);
+  const tableId = (request.headers.get("X-Table-Id") || "").trim();
+  const fileId = (request.headers.get("X-File-Id") || "").trim();
+  const contentType = (request.headers.get("Content-Type") || "").split(";")[0].trim();
+  if (!tableId) throw new Error("Choose a table id.");
+  if (!fileId) throw new Error("Choose a file id.");
+  if (!ALLOWED_TYPES.has(contentType)) {
+    throw new Error("Use an image (JPEG, PNG, WebP, GIF) or a PDF.");
+  }
+
+  await requireMember(env.FIREBASE_PROJECT_ID, idToken, uid, tableId);
+  const meta = await firestoreGet(env.FIREBASE_PROJECT_ID, idToken, `tables/${tableId}/files/${fileId}`);
+  if (!meta) throw new Error("Save the file details before uploading bytes.");
+  if (stringField(meta, "ownerId") !== uid) {
+    throw new Error("Only the uploader can store this file.");
+  }
+
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.byteLength <= 0 || bytes.byteLength > MAX_FILE_BYTES) {
+    throw new Error("Files must be at most 5 MB.");
+  }
+  const declaredSize = numberField(meta, "size");
+  if (declaredSize && Math.abs(declaredSize - bytes.byteLength) > 1) {
+    throw new Error("File size did not match what was saved.");
+  }
+
+  await env.FILES.put(objectKey(tableId, fileId), bytes, {
+    httpMetadata: { contentType },
+    customMetadata: { ownerId: uid, tableId, fileId },
+  });
+  return json({ ok: true, fileId, size: bytes.byteLength }, 200, request);
+}
+
+async function handleFileDownload(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!env.FILES) throw new Error("File storage is not configured on the server.");
+  const { uid, idToken } = await requireUid(request, env);
+  const tableId = (url.searchParams.get("tableId") || "").trim();
+  const fileId = (url.searchParams.get("fileId") || "").trim();
+  if (!tableId) throw new Error("Choose a table id.");
+  if (!fileId) throw new Error("Choose a file id.");
+
+  await requireMember(env.FIREBASE_PROJECT_ID, idToken, uid, tableId);
+  const meta = await firestoreGet(env.FIREBASE_PROJECT_ID, idToken, `tables/${tableId}/files/${fileId}`);
+  if (!meta) throw new Error("That file could not be found.");
+  if (!canViewFile(uid, meta)) throw new Error("You cannot open that file.");
+
+  const object = await env.FILES.get(objectKey(tableId, fileId));
+  if (!object) throw new Error("That file could not be found.");
+  const headers = new Headers(corsHeaders(request));
+  headers.set("Content-Type", stringField(meta, "contentType") || object.httpMetadata?.contentType || "application/octet-stream");
+  headers.set(
+    "Content-Disposition",
+    `inline; filename="${sanitizeFilename(stringField(meta, "name") || fileId)}"`,
+  );
+  headers.set("Cache-Control", "private, max-age=60");
+  return new Response(object.body, { status: 200, headers });
+}
+
+async function handleFileDelete(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!env.FILES) throw new Error("File storage is not configured on the server.");
+  const { uid, idToken } = await requireUid(request, env);
+  const tableId = (url.searchParams.get("tableId") || "").trim();
+  const fileId = (url.searchParams.get("fileId") || "").trim();
+  if (!tableId) throw new Error("Choose a table id.");
+  if (!fileId) throw new Error("Choose a file id.");
+
+  await requireMember(env.FIREBASE_PROJECT_ID, idToken, uid, tableId);
+  const meta = await firestoreGet(env.FIREBASE_PROJECT_ID, idToken, `tables/${tableId}/files/${fileId}`);
+  if (meta && stringField(meta, "ownerId") !== uid) {
+    throw new Error("Only the uploader can delete this file.");
+  }
+  await env.FILES.delete(objectKey(tableId, fileId));
+  return json({ ok: true }, 200, request);
+}
+
+function canViewFile(uid: string, meta: Record<string, unknown>): boolean {
+  const ownerId = stringField(meta, "ownerId");
+  if (ownerId === uid) return true;
+  const visibility = stringField(meta, "visibility");
+  if (visibility === "table") return true;
+  if (visibility === "shared") {
+    return listField(meta, "sharedWith").includes(uid);
+  }
+  return false;
+}
+
+function objectKey(tableId: string, fileId: string): string {
+  return `tables/${tableId}/files/${fileId}`;
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^\w.\- ()]+/g, "_").slice(0, 80) || "file";
+}
+
 async function firestoreGet(
   projectId: string,
   idToken: string,
@@ -143,7 +271,7 @@ async function firestoreGet(
   });
   if (response.status === 404) return null;
   if (!response.ok) {
-    if (response.status === 403) throw new Error("Only table members can send a notice.");
+    if (response.status === 403) throw new Error("Only table members can use files at this table.");
     throw new Error("That table could not be found.");
   }
   const data = (await response.json()) as { fields?: Record<string, unknown> };
@@ -217,12 +345,31 @@ function stringField(fields: Record<string, unknown>, key: string): string {
   return typeof record.stringValue === "string" ? record.stringValue : "";
 }
 
+function numberField(fields: Record<string, unknown>, key: string): number {
+  const value = fields[key];
+  if (!value || typeof value !== "object") return 0;
+  const record = value as { integerValue?: unknown; doubleValue?: unknown };
+  if (typeof record.doubleValue === "number") return record.doubleValue;
+  if (typeof record.integerValue === "string") return Number(record.integerValue);
+  if (typeof record.integerValue === "number") return record.integerValue;
+  return 0;
+}
+
+function listField(fields: Record<string, unknown>, key: string): string[] {
+  const value = fields[key];
+  if (!value || typeof value !== "object") return [];
+  const record = value as { arrayValue?: { values?: Array<{ stringValue?: unknown }> } };
+  return (record.arrayValue?.values ?? [])
+    .map((item) => (typeof item.stringValue === "string" ? item.stringValue : ""))
+    .filter(Boolean);
+}
+
 function corsHeaders(request: Request): HeadersInit {
   const origin = request.headers.get("Origin") || "*";
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Table-Id, X-File-Id",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
