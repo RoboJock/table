@@ -2,10 +2,19 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { formatActivityTime } from "../lib/activity";
 import { fileVisibilityLabel, formatFileSize } from "../lib/files";
 import { joinPolicyLabel, seatsRemaining } from "../lib/tables";
-import type { FileDoc, FileVisibility, JoinPolicy, MemberDoc, NoticeDoc, TableDoc } from "../lib/types";
+import type {
+  ActivityDoc,
+  FileDoc,
+  FileVisibility,
+  JoinPolicy,
+  MemberDoc,
+  NoticeDoc,
+  TableDoc,
+} from "../lib/types";
 import { useTableApp } from "./AppShell";
 
 export function TableRoom() {
@@ -17,6 +26,7 @@ export function TableRoom() {
   const [members, setMembers] = useState<MemberDoc[]>([]);
   const [notices, setNotices] = useState<NoticeDoc[]>([]);
   const [files, setFiles] = useState<FileDoc[]>([]);
+  const [activity, setActivity] = useState<ActivityDoc[]>([]);
   const [me, setMe] = useState<MemberDoc | null>(null);
   const [rename, setRename] = useState("");
   const [seatLimit, setSeatLimit] = useState("4");
@@ -24,46 +34,49 @@ export function TableRoom() {
   const [displayName, setDisplayName] = useState("");
   const [seatNote, setSeatNote] = useState("");
   const [email, setEmail] = useState("");
-  const [inviteUid, setInviteUid] = useState("");
-  const [inviteName, setInviteName] = useState("");
   const [noticeSubject, setNoticeSubject] = useState("");
   const [noticeBody, setNoticeBody] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadVisibility, setUploadVisibility] = useState<FileVisibility>("private");
   const [uploadSharedWith, setUploadSharedWith] = useState<string[]>([]);
   const [message, setMessage] = useState("");
+  const [live, setLive] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const reload = useCallback(async () => {
-    if (!tableId) return;
-    const opened = await backend.openTable(tableId);
-    setTable(opened.table);
-    setMembers(opened.members);
-    setNotices(opened.notices);
-    setFiles(opened.files);
-    setMe(opened.me);
-    setRename(opened.table.name);
-    setSeatLimit(String(opened.table.seatLimit));
-    setJoinPolicy(opened.table.joinPolicy);
-    setDisplayName(opened.me.displayName);
-    setSeatNote(opened.me.seatNote);
-    setEmail(opened.me.email || user?.email || "");
-  }, [backend, tableId, user?.email]);
-
   useEffect(() => {
-    if (!ready) return;
-    if (!user) return;
-    if (!tableId) return;
+    if (!ready || !user || !tableId) return;
     setMessage("");
-    void reload().catch((error: unknown) => {
-      setTable(null);
-      setMembers([]);
-      setNotices([]);
-      setFiles([]);
-      setMe(null);
-      setMessage(error instanceof Error ? error.message : "Could not open this table.");
+    setLive(false);
+    const unsub = backend.subscribeTableRoom(tableId, (snapshot, error) => {
+      if (error || !snapshot) {
+        setTable(null);
+        setMembers([]);
+        setNotices([]);
+        setFiles([]);
+        setActivity([]);
+        setMe(null);
+        setLive(false);
+        setMessage(error?.message || "Could not open this table.");
+        return;
+      }
+      setTable(snapshot.table);
+      setMembers(snapshot.members);
+      setNotices(snapshot.notices);
+      setFiles(snapshot.files);
+      setActivity(snapshot.activity);
+      setMe(snapshot.me);
+      setRename(snapshot.table.name);
+      setSeatLimit(String(snapshot.table.seatLimit));
+      setJoinPolicy(snapshot.table.joinPolicy);
+      setDisplayName(snapshot.me.displayName);
+      setSeatNote(snapshot.me.seatNote);
+      setEmail(snapshot.me.email || user.email || "");
+      setLive(true);
     });
-  }, [ready, user, tableId, reload]);
+    return () => {
+      unsub();
+    };
+  }, [backend, ready, user, tableId]);
 
   if (!tableId) {
     return (
@@ -105,7 +118,6 @@ export function TableRoom() {
     setMessage("");
     try {
       await action();
-      await reload();
       setMessage(ok);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "That action failed.");
@@ -125,9 +137,28 @@ export function TableRoom() {
             <p className="muted">
               {joinPolicyLabel(table.joinPolicy)} · {table.memberCount}/{table.seatLimit} seats filled
               {seatsRemaining(table) === 0 ? " · full" : ` · ${seatsRemaining(table)} open`}
+              {live ? " · live" : ""}
             </p>
-            <p className="muted">Table id</p>
-            <p className="mono">{table.id}</p>
+            <p className="muted">Join code</p>
+            <div className="copy-row">
+              <p className="mono" style={{ margin: 0 }}>
+                {table.joinCode || "—"}
+              </p>
+              {table.joinCode ? (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(table.joinCode).then(
+                      () => setMessage("Join code copied."),
+                      () => setMessage("Could not copy the join code."),
+                    );
+                  }}
+                >
+                  Copy code
+                </button>
+              ) : null}
+            </div>
           </div>
           <Link className="button secondary" href="/">
             All tables
@@ -139,15 +170,14 @@ export function TableRoom() {
             onSubmit={(event) => {
               event.preventDefault();
               void run(
-                () =>
-                  backend.updateTableSettings(table.id, rename, Number(seatLimit), joinPolicy),
+                () => backend.updateTableSettings(table.id, rename, Number(seatLimit), joinPolicy),
                 "Table settings saved.",
               );
             }}
           >
             <label>
               Table name
-              <input value={rename} onChange={(event) => setRename(event.target.value)} maxLength={40} />
+              <input value={rename} onChange={(event) => setRename(event.target.value)} maxLength={40} required />
             </label>
             <label>
               Seat limit
@@ -157,6 +187,7 @@ export function TableRoom() {
                 max={40}
                 value={seatLimit}
                 onChange={(event) => setSeatLimit(event.target.value)}
+                required
               />
             </label>
             <fieldset className="join-policy">
@@ -170,6 +201,7 @@ export function TableRoom() {
                 />
                 <span>
                   <strong>Invite only</strong>
+                  <span className="muted"> Share the join code with people you trust.</span>
                 </span>
               </label>
               <label className="choice">
@@ -181,14 +213,52 @@ export function TableRoom() {
                 />
                 <span>
                   <strong>First come, first serve</strong>
+                  <span className="muted"> Anyone with the code can take an open seat.</span>
                 </span>
               </label>
             </fieldset>
-            <button type="submit" className="secondary" disabled={busy}>
-              Save settings
-            </button>
+            <div className="row">
+              <button type="submit" disabled={busy}>
+                Save settings
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => {
+                  void run(async () => {
+                    await backend.rotateJoinCode(table.id);
+                  }, "New join code is ready. Copy it above.");
+                }}
+              >
+                New join code
+              </button>
+            </div>
           </form>
-        ) : null}
+        ) : (
+          <p className="muted">
+            {table.joinPolicy === "inviteOnly"
+              ? "This table is invite only. Share the join code only with people you want here."
+              : "Open seats go to whoever enters the join code first."}
+          </p>
+        )}
+      </section>
+
+      <section className="panel stack">
+        <h2>What’s happening</h2>
+        <p className="muted">Updates show here as people join, leave, or send notices.</p>
+        {activity.length === 0 ? (
+          <p className="muted">Nothing yet.</p>
+        ) : (
+          <ul className="activity-list">
+            {activity.slice(0, 30).map((item) => (
+              <li key={item.id}>
+                <span>{item.summary}</span>
+                <span className="muted">{formatActivityTime(item.createdAt)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section className="panel stack">
@@ -205,16 +275,11 @@ export function TableRoom() {
         >
           <label>
             Display name
-            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={40} required />
-          </label>
-          <label>
-            Email for reminders
             <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              maxLength={254}
-              placeholder="Where reminders for this table should go"
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
+              maxLength={40}
+              required
             />
           </label>
           <label>
@@ -223,14 +288,23 @@ export function TableRoom() {
               value={seatNote}
               onChange={(event) => setSeatNote(event.target.value)}
               maxLength={500}
-              placeholder="What you are bringing, playing, or tracking"
+              placeholder="What you’re bringing, or a short note for the table"
+            />
+          </label>
+          <label>
+            Email for reminders
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="you@example.com"
             />
           </label>
           <button type="submit" disabled={busy}>
             Save seat
           </button>
         </form>
-        {me.role === "member" ? (
+        {me.role !== "owner" ? (
           <button
             type="button"
             className="danger"
@@ -250,6 +324,11 @@ export function TableRoom() {
       <section className="panel stack">
         <h2>Send a notice</h2>
         <p className="muted">Send out an email reminder for people at this table.</p>
+        <p className="muted">
+          {recipientReady === 0
+            ? "No one has a reminder email yet."
+            : `${recipientReady} inbox${recipientReady === 1 ? "" : "es"} ready.`}
+        </p>
         <form
           className="stack"
           onSubmit={(event) => {
@@ -261,7 +340,6 @@ export function TableRoom() {
                 const result = await backend.sendNotice(table.id, noticeSubject, noticeBody);
                 setNoticeSubject("");
                 setNoticeBody("");
-                await reload();
                 setMessage(
                   `Notice sent to ${result.recipientCount} inbox${result.recipientCount === 1 ? "" : "es"}.`,
                 );
@@ -528,7 +606,6 @@ export function TableRoom() {
               </header>
               <p className="muted">{member.seatNote || "No seat note yet."}</p>
               <p className="muted">{member.email ? "Gets email reminders" : "No reminder email yet"}</p>
-              <p className="mono">{member.uid}</p>
               {me.role === "owner" && member.role !== "owner" ? (
                 <button
                   type="button"
@@ -548,43 +625,12 @@ export function TableRoom() {
 
       {me.role === "owner" ? (
         <section className="panel stack">
-          <h2>Invite</h2>
+          <h2>Share this table</h2>
           <p className="muted">
             {seatsRemaining(table) === 0
-              ? "This table is full. Raise the seat limit before inviting someone else."
-              : "Ask the other person to sign in and send you their account id from the home page. Paste it here. They can add an email for reminders after they join."}
+              ? "This table is full. Raise the seat limit before sharing the code again."
+              : "Send people the join code above. They sign in, enter the code on the home page, and take a seat."}
           </p>
-          <form
-            className="stack"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void run(
-                () =>
-                  backend.inviteMember(table.id, inviteUid, inviteName).then(() => {
-                    setInviteUid("");
-                    setInviteName("");
-                  }),
-                "Invite saved. They can open this table id after signing in.",
-              );
-            }}
-          >
-            <label>
-              Account id
-              <input value={inviteUid} onChange={(event) => setInviteUid(event.target.value)} required />
-            </label>
-            <label>
-              Display name for their seat
-              <input
-                value={inviteName}
-                onChange={(event) => setInviteName(event.target.value)}
-                placeholder="Optional"
-                maxLength={40}
-              />
-            </label>
-            <button type="submit" disabled={busy || seatsRemaining(table) === 0}>
-              Invite member
-            </button>
-          </form>
           <button
             type="button"
             className="danger"

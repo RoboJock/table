@@ -1,4 +1,39 @@
-import type { JoinPolicy, MemberDoc, MemberRole, NoticeDoc, TableDoc } from "./types";
+import type { JoinCodeDoc, JoinPolicy, MemberDoc, MemberRole, NoticeDoc, TableDoc } from "./types";
+
+/** Avoid ambiguous characters in spoken / typed join codes. */
+const JOIN_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+export function cleanJoinCode(code: string): string {
+  const normalized = code.trim().toUpperCase().replace(/[\s-]+/g, "");
+  if (!/^[A-Z0-9]{6}$/.test(normalized)) {
+    throw new Error("Join codes are 6 letters or numbers.");
+  }
+  return normalized;
+}
+
+export function newJoinCode(): string {
+  const bytes =
+    typeof crypto !== "undefined" && "getRandomValues" in crypto
+      ? crypto.getRandomValues(new Uint8Array(6))
+      : Uint8Array.from({ length: 6 }, () => Math.floor(Math.random() * 256));
+  return Array.from(bytes, (byte) => JOIN_CODE_ALPHABET[byte % JOIN_CODE_ALPHABET.length]).join("");
+}
+
+export function joinCodePayload(table: TableDoc): Omit<JoinCodeDoc, "code"> {
+  return {
+    tableId: table.id,
+    name: table.name,
+    seatLimit: table.seatLimit,
+    memberCount: table.memberCount,
+    joinPolicy: table.joinPolicy,
+    ownerId: table.ownerId,
+  };
+}
+
+export function canJoinWithCode(table: Pick<TableDoc, "memberCount" | "seatLimit">, alreadyMember: boolean): boolean {
+  if (alreadyMember) return false;
+  return seatsRemaining(table as TableDoc) > 0;
+}
 
 export function cleanTableName(name: string): string {
   const trimmed = name.trim().replace(/\s+/g, " ");
@@ -99,6 +134,7 @@ export function buildTable(input: {
   ownerId: string;
   seatLimit: number;
   joinPolicy: JoinPolicy;
+  joinCode?: string;
   memberCount?: number;
   createdAt?: number;
 }): TableDoc {
@@ -111,6 +147,7 @@ export function buildTable(input: {
     id: input.id,
     name: cleanTableName(input.name),
     ownerId: input.ownerId,
+    joinCode: cleanJoinCode(input.joinCode ?? newJoinCode()),
     seatLimit,
     joinPolicy: cleanJoinPolicy(input.joinPolicy),
     memberCount,
@@ -158,9 +195,22 @@ export function tablePayload(table: TableDoc): Omit<TableDoc, "id"> {
   return {
     name: table.name,
     ownerId: table.ownerId,
+    joinCode: table.joinCode,
     seatLimit: table.seatLimit,
     joinPolicy: table.joinPolicy,
     memberCount: table.memberCount,
+    createdAt: table.createdAt,
+  };
+}
+
+export function tableFieldsForCountBump(table: TableDoc, memberCount: number): Omit<TableDoc, "id"> {
+  return {
+    name: table.name,
+    ownerId: table.ownerId,
+    joinCode: table.joinCode,
+    seatLimit: table.seatLimit,
+    joinPolicy: table.joinPolicy,
+    memberCount,
     createdAt: table.createdAt,
   };
 }

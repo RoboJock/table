@@ -52,9 +52,16 @@ service cloud.firestore {
       return value in ['inviteOnly', 'firstComeFirstServe'];
     }
 
+    function joinCodeOk(value) {
+      return value is string && value.matches('^[A-Z0-9]{6}$');
+    }
+
     function tableDataOk(data) {
-      return data.keys().hasOnly(['name', 'ownerId', 'seatLimit', 'joinPolicy', 'memberCount', 'createdAt'])
+      return data.keys().hasOnly([
+          'name', 'ownerId', 'joinCode', 'seatLimit', 'joinPolicy', 'memberCount', 'createdAt'
+        ])
         && nameOk(data.name)
+        && joinCodeOk(data.joinCode)
         && seatLimitOk(data.seatLimit)
         && joinPolicyOk(data.joinPolicy)
         && memberCountOk(data.memberCount)
@@ -76,15 +83,9 @@ service cloud.firestore {
             && get(/databases/$(database)/documents/tables/$(tableId)).data.ownerId == request.auth.uid
           )
           || (
-            isOwner(tableId)
-            && uid != request.auth.uid
-            && request.resource.data.role == 'member'
-          )
-          || (
-            // First come, first serve: signed-in person claims their own member seat.
+            // Join by code (both policies): claim your own member seat.
             uid == request.auth.uid
             && request.resource.data.role == 'member'
-            && get(/databases/$(database)/documents/tables/$(tableId)).data.joinPolicy == 'firstComeFirstServe'
           )
         );
     }
@@ -188,6 +189,25 @@ service cloud.firestore {
         );
     }
 
+    function activityTypeOk(value) {
+      return value in [
+        'created', 'joined', 'left', 'removed', 'notice', 'settings', 'code_rotated'
+      ];
+    }
+
+    function activityCreateOk() {
+      return request.resource.data.keys().hasOnly([
+          'type', 'actorId', 'actorName', 'summary', 'createdAt'
+        ])
+        && request.resource.data.actorId == request.auth.uid
+        && activityTypeOk(request.resource.data.type)
+        && displayNameOk(request.resource.data.actorName)
+        && request.resource.data.summary is string
+        && request.resource.data.summary.size() >= 1
+        && request.resource.data.summary.size() <= 200
+        && numberOk(request.resource.data.createdAt);
+    }
+
     function ownerTableUpdateOk(tableId) {
       return isOwner(tableId)
         && request.resource.data.ownerId == resource.data.ownerId
@@ -201,7 +221,7 @@ service cloud.firestore {
         );
     }
 
-    // Seat-count bump used with invite / first-come join in the same transaction.
+    // Seat-count bump used with join / leave / remove in the same transaction.
     function memberCountBumpOk() {
       return signedIn()
         && request.resource.data.ownerId == resource.data.ownerId
@@ -209,6 +229,7 @@ service cloud.firestore {
         && request.resource.data.name == resource.data.name
         && request.resource.data.seatLimit == resource.data.seatLimit
         && request.resource.data.joinPolicy == resource.data.joinPolicy
+        && request.resource.data.joinCode == resource.data.joinCode
         && tableDataOk(request.resource.data)
         && (
           request.resource.data.memberCount == resource.data.memberCount + 1
@@ -216,12 +237,73 @@ service cloud.firestore {
         );
     }
 
+    function joinCodeDocOk(code) {
+      return request.resource.data.keys().hasOnly([
+          'tableId', 'name', 'seatLimit', 'memberCount', 'joinPolicy', 'ownerId'
+        ])
+        && request.resource.data.tableId is string
+        && request.resource.data.tableId.size() >= 6
+        && nameOk(request.resource.data.name)
+        && seatLimitOk(request.resource.data.seatLimit)
+        && memberCountOk(request.resource.data.memberCount)
+        && joinPolicyOk(request.resource.data.joinPolicy)
+        && request.resource.data.ownerId == request.auth.uid
+        && get(/databases/$(database)/documents/tables/$(request.resource.data.tableId)).data.ownerId
+          == request.auth.uid
+        && get(/databases/$(database)/documents/tables/$(request.resource.data.tableId)).data.joinCode
+          == code;
+    }
+
+    // After join/leave, any signed-in user may refresh the public seat count so
+    // it matches the live table document.
+    function joinCodeCountSyncOk(code) {
+      return request.resource.data.keys().hasOnly([
+          'tableId', 'name', 'seatLimit', 'memberCount', 'joinPolicy', 'ownerId'
+        ])
+        && request.resource.data.tableId == resource.data.tableId
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.seatLimit == resource.data.seatLimit
+        && request.resource.data.joinPolicy == resource.data.joinPolicy
+        && memberCountOk(request.resource.data.memberCount)
+        && get(/databases/$(database)/documents/tables/$(resource.data.tableId)).data.memberCount
+          == request.resource.data.memberCount
+        && get(/databases/$(database)/documents/tables/$(resource.data.tableId)).data.joinCode
+          == code;
+    }
+
+    match /joinCodes/{code} {
+      // Knowing the code is the gate; signed-in people may look one up by id.
+      allow read: if signedIn() && joinCodeOk(code);
+
+      allow create: if signedIn() && joinCodeOk(code) && joinCodeDocOk(code);
+
+      allow update: if signedIn()
+        && joinCodeOk(code)
+        && (
+          (
+            resource.data.ownerId == request.auth.uid
+            && joinCodeDocOk(code)
+            && request.resource.data.tableId == resource.data.tableId
+            && request.resource.data.ownerId == resource.data.ownerId
+          )
+          || joinCodeCountSyncOk(code)
+        );
+
+      allow delete: if signedIn()
+        && resource.data.ownerId == request.auth.uid;
+    }
+
     match /tables/{tableId} {
-      // Members and owners can read. First-come tables are also readable so
-      // signed-in people can see seats left before they join.
-      allow read: if isMember(tableId)
-        || (signedIn() && resource.data.ownerId == request.auth.uid)
-        || (signedIn() && resource.data.joinPolicy == 'firstComeFirstServe');
+      // Single-doc get is allowed for any signed-in user so a join-code lookup
+      // can open the seat transaction. Listing stays narrow so tables cannot be
+      // scraped from the collection.
+      allow get: if signedIn();
+      allow list: if signedIn() && (
+        resource.data.ownerId == request.auth.uid
+        || isMember(tableId)
+        || resource.data.joinPolicy == 'firstComeFirstServe'
+      );
 
       allow create: if signedIn()
         && tableDataOk(request.resource.data)
@@ -233,8 +315,6 @@ service cloud.firestore {
       allow delete: if isOwner(tableId);
 
       match /members/{uid} {
-        // Members can read the whole list. A signed-in user may read only their
-        // own seat doc so first-come join can check "am I already here?"
         allow read: if isMember(tableId)
           || (signedIn() && request.auth.uid == uid);
 
@@ -255,13 +335,17 @@ service cloud.firestore {
 
       match /files/{fileId} {
         allow read: if isMember(tableId) && fileReadOk();
-
         allow create: if isMember(tableId) && fileCreateOk();
-
         allow update: if isMember(tableId) && fileUpdateOk();
-
         allow delete: if isMember(tableId)
           && resource.data.ownerId == request.auth.uid;
+      }
+
+      match /activity/{activityId} {
+        allow read: if isMember(tableId);
+        allow create: if isMember(tableId) && activityCreateOk();
+        allow update: if false;
+        allow delete: if isOwner(tableId);
       }
     }
   }

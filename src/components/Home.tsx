@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { joinPolicyLabel, readRecentTableIds, seatsRemaining } from "../lib/tables";
-import type { JoinPolicy, TableDoc } from "../lib/types";
+import type { JoinCodeDoc, JoinPolicy, TableDoc } from "../lib/types";
 import { useTableApp } from "./AppShell";
 
 export function Home() {
@@ -14,8 +14,8 @@ export function Home() {
   const [name, setName] = useState("");
   const [seatLimit, setSeatLimit] = useState("4");
   const [joinPolicy, setJoinPolicy] = useState<JoinPolicy>("inviteOnly");
-  const [openId, setOpenId] = useState("");
-  const [joinPreview, setJoinPreview] = useState<TableDoc | null>(null);
+  const [joinCodeInput, setJoinCodeInput] = useState("");
+  const [joinPreview, setJoinPreview] = useState<JoinCodeDoc | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -42,8 +42,8 @@ export function Home() {
       <section className="hero panel">
         <h1>A shared table for a small group</h1>
         <p className="lede">
-          Create a table with a seat limit, invite people or open first come first serve seats, and
-          let each member edit only their own place.
+          Create a table with a seat limit, share a join code, and watch the room update live as
+          people sit down.
         </p>
         <Link className="button" href="/login">
           Sign in to start
@@ -67,43 +67,43 @@ export function Home() {
     }
   }
 
-  async function lookUpTable(event: React.FormEvent) {
+  async function lookUpCode(event: React.FormEvent) {
     event.preventDefault();
-    const id = openId.trim();
-    if (!id) {
-      setMessage("Paste a table id first.");
+    const code = joinCodeInput.trim();
+    if (!code) {
+      setMessage("Enter a join code first.");
       return;
     }
     setBusy(true);
     setMessage("");
     setJoinPreview(null);
     try {
-      const opened = await backend.openTable(id);
-      router.push(`/table?id=${encodeURIComponent(opened.table.id)}`);
-    } catch {
+      const peeked = await backend.peekJoinCode(code);
       try {
-        const peeked = await backend.peekTable(id);
+        const opened = await backend.openTable(peeked.tableId);
+        router.push(`/table?id=${encodeURIComponent(opened.table.id)}`);
+        return;
+      } catch {
         setJoinPreview(peeked);
-        setMessage("");
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : "Could not open that table.");
       }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not look up that code.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function joinFirstCome() {
+  async function takeSeat() {
     if (!joinPreview) return;
     setBusy(true);
     setMessage("");
     try {
-      await backend.joinTable(joinPreview.id);
-      router.push(`/table?id=${encodeURIComponent(joinPreview.id)}`);
+      const joined = await backend.joinWithCode(joinPreview.code);
+      router.push(`/table?id=${encodeURIComponent(joined.tableId)}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not join that table.");
       try {
-        setJoinPreview(await backend.peekTable(joinPreview.id));
+        setJoinPreview(await backend.peekJoinCode(joinPreview.code));
       } catch {
         setJoinPreview(null);
       }
@@ -116,26 +116,7 @@ export function Home() {
     <div className="stack">
       <section className="hero panel">
         <h1>Your tables</h1>
-        <p className="lede">
-          Signed in as {user.name}. Share your account id when someone invites you:
-        </p>
-        <div className="copy-row">
-          <p className="mono" style={{ margin: 0 }}>
-            {user.id}
-          </p>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              void navigator.clipboard.writeText(user.id).then(
-                () => setMessage("Account id copied."),
-                () => setMessage("Could not copy the account id."),
-              );
-            }}
-          >
-            Copy id
-          </button>
-        </div>
+        <p className="lede">Signed in as {user.name}. Share a table’s join code when you want people in.</p>
       </section>
 
       <section className="panel stack">
@@ -173,7 +154,7 @@ export function Home() {
               />
               <span>
                 <strong>Invite only</strong>
-                <span className="muted"> You add people by account id.</span>
+                <span className="muted"> Share the join code with people you trust.</span>
               </span>
             </label>
             <label className="choice">
@@ -185,7 +166,7 @@ export function Home() {
               />
               <span>
                 <strong>First come, first serve</strong>
-                <span className="muted"> Anyone with the table id can grab an open seat.</span>
+                <span className="muted"> Anyone with the join code can grab an open seat.</span>
               </span>
             </label>
           </fieldset>
@@ -196,15 +177,22 @@ export function Home() {
       </section>
 
       <section className="panel stack">
-        <h2>Open or join a table</h2>
+        <h2>Join with a code</h2>
         <p className="muted">
-          Paste a table id. If you already belong, you go in. If it is first come, first serve, you
-          can take an open seat.
+          Enter the 6-character code from the table owner. If you already belong, you go straight in.
         </p>
-        <form className="stack" onSubmit={(event) => void lookUpTable(event)}>
+        <form className="stack" onSubmit={(event) => void lookUpCode(event)}>
           <label>
-            Table id
-            <input value={openId} onChange={(event) => setOpenId(event.target.value)} placeholder="Paste an id" />
+            Join code
+            <input
+              value={joinCodeInput}
+              onChange={(event) => setJoinCodeInput(event.target.value.toUpperCase())}
+              placeholder="ABC123"
+              maxLength={8}
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+            />
           </label>
           <button type="submit" className="secondary" disabled={busy}>
             Look up
@@ -216,17 +204,26 @@ export function Home() {
               <strong>{joinPreview.name}</strong>
             </p>
             <p className="muted">
-              {joinPolicyLabel(joinPreview.joinPolicy)} · {seatsRemaining(joinPreview)} of{" "}
-              {joinPreview.seatLimit} seats open
+              {joinPolicyLabel(joinPreview.joinPolicy)} ·{" "}
+              {seatsRemaining({
+                ...joinPreview,
+                id: joinPreview.tableId,
+                joinCode: joinPreview.code,
+                createdAt: 0,
+              })}{" "}
+              of {joinPreview.seatLimit} seats open
             </p>
-            {joinPreview.joinPolicy === "firstComeFirstServe" && seatsRemaining(joinPreview) > 0 ? (
-              <button type="button" disabled={busy} onClick={() => void joinFirstCome()}>
+            {seatsRemaining({
+              ...joinPreview,
+              id: joinPreview.tableId,
+              joinCode: joinPreview.code,
+              createdAt: 0,
+            }) > 0 ? (
+              <button type="button" disabled={busy} onClick={() => void takeSeat()}>
                 Take a seat
               </button>
-            ) : joinPreview.joinPolicy === "firstComeFirstServe" ? (
-              <p className="status">This table is full.</p>
             ) : (
-              <p className="muted">Invite only — ask the owner to add your account id.</p>
+              <p className="status">This table is full.</p>
             )}
           </div>
         ) : null}
@@ -258,7 +255,8 @@ export function Home() {
                 <Link href={`/table?id=${encodeURIComponent(table.id)}`}>
                   <strong>{table.name}</strong>
                   <span className="mono">
-                    {table.memberCount}/{table.seatLimit} · {table.id}
+                    {table.memberCount}/{table.seatLimit}
+                    {table.joinCode ? ` · code ${table.joinCode}` : ""}
                   </span>
                 </Link>
               </li>

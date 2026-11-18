@@ -16,6 +16,7 @@ import {
   getDoc,
   getDocs,
   getFirestore,
+  onSnapshot,
   query,
   runTransaction,
   setDoc,
@@ -23,7 +24,9 @@ import {
   where,
   writeBatch,
   type Firestore,
+  type Transaction,
 } from "firebase/firestore";
+import { activityPayload, buildActivity, sortActivity } from "./activity";
 import {
   assertAllowedFile,
   buildFileDoc,
@@ -38,22 +41,28 @@ import {
   buildTable,
   cleanDisplayName,
   cleanEmail,
+  cleanJoinCode,
   cleanJoinPolicy,
   cleanSeatLimit,
   cleanSeatNote,
   cleanTableName,
   cleanUid,
+  joinCodePayload,
   memberPayload,
+  newJoinCode,
   newTableId,
   rememberTableId,
   sortMembers,
   sortNotices,
+  tableFieldsForCountBump,
   tablePayload,
 } from "./tables";
 import type {
+  ActivityDoc,
   AppUser,
   FileDoc,
   FileVisibility,
+  JoinCodeDoc,
   JoinPolicy,
   MemberDoc,
   NoticeDoc,
@@ -65,6 +74,15 @@ export type SendNoticeResult = {
   recipientCount: number;
 };
 
+export type TableRoomSnapshot = {
+  table: TableDoc;
+  members: MemberDoc[];
+  me: MemberDoc;
+  notices: NoticeDoc[];
+  files: FileDoc[];
+  activity: ActivityDoc[];
+};
+
 export type Backend = {
   configured: boolean;
   subscribe(listener: (user: AppUser | null) => void): Unsubscribe | (() => void);
@@ -73,13 +91,12 @@ export type Backend = {
   signOut(): Promise<void>;
   listOwnedTables(): Promise<TableDoc[]>;
   peekTable(tableId: string): Promise<TableDoc>;
-  openTable(tableId: string): Promise<{
-    table: TableDoc;
-    members: MemberDoc[];
-    me: MemberDoc;
-    notices: NoticeDoc[];
-    files: FileDoc[];
-  }>;
+  peekJoinCode(code: string): Promise<JoinCodeDoc>;
+  openTable(tableId: string): Promise<TableRoomSnapshot>;
+  subscribeTableRoom(
+    tableId: string,
+    listener: (snapshot: TableRoomSnapshot | null, error?: Error) => void,
+  ): Unsubscribe | (() => void);
   createTable(name: string, seatLimit: number, joinPolicy: JoinPolicy): Promise<TableDoc>;
   updateTableSettings(
     tableId: string,
@@ -87,8 +104,9 @@ export type Backend = {
     seatLimit: number,
     joinPolicy: JoinPolicy,
   ): Promise<void>;
+  rotateJoinCode(tableId: string): Promise<string>;
   deleteTable(tableId: string, memberUids: string[], noticeIds: string[]): Promise<void>;
-  inviteMember(tableId: string, uid: string, displayName: string): Promise<MemberDoc>;
+  joinWithCode(code: string): Promise<{ tableId: string; member: MemberDoc }>;
   joinTable(tableId: string): Promise<MemberDoc>;
   removeMember(tableId: string, uid: string): Promise<void>;
   leaveTable(tableId: string): Promise<void>;
@@ -141,7 +159,6 @@ function friendly(error: unknown): Error {
   return new Error("Something went wrong. Try again.");
 }
 
-/** Last-seat races often surface as permission-denied on the losing write. */
 function seatRaceFriendly(error: unknown): Error {
   if (error instanceof Error && /full/i.test(error.message)) return error;
   const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
@@ -191,10 +208,12 @@ function readTable(id: string, data: Record<string, unknown>): TableDoc {
     data.joinPolicy === "inviteOnly" || data.joinPolicy === "firstComeFirstServe"
       ? data.joinPolicy
       : "inviteOnly";
+  const joinCode = typeof data.joinCode === "string" ? data.joinCode : "";
   return {
     id,
     name: data.name,
     ownerId: data.ownerId,
+    joinCode,
     seatLimit,
     joinPolicy,
     memberCount,
@@ -206,18 +225,16 @@ function readMember(uid: string, data: Record<string, unknown>): MemberDoc {
   if (
     typeof data.displayName !== "string" ||
     (data.role !== "owner" && data.role !== "member") ||
-    typeof data.seatNote !== "string" ||
     typeof data.joinedAt !== "number"
   ) {
     throw new Error("That member document is incomplete.");
   }
-  const email = typeof data.email === "string" ? data.email : "";
   return {
     uid,
     displayName: data.displayName,
     role: data.role,
-    seatNote: data.seatNote,
-    email,
+    seatNote: typeof data.seatNote === "string" ? data.seatNote : "",
+    email: typeof data.email === "string" ? data.email : "",
     joinedAt: data.joinedAt,
   };
 }
@@ -266,6 +283,58 @@ function readFile(id: string, data: Record<string, unknown>): FileDoc {
   };
 }
 
+function readActivity(id: string, data: Record<string, unknown>): ActivityDoc {
+  const allowed = new Set([
+    "created",
+    "joined",
+    "left",
+    "removed",
+    "notice",
+    "settings",
+    "code_rotated",
+  ]);
+  if (
+    typeof data.type !== "string" ||
+    !allowed.has(data.type) ||
+    typeof data.actorId !== "string" ||
+    typeof data.actorName !== "string" ||
+    typeof data.summary !== "string" ||
+    typeof data.createdAt !== "number"
+  ) {
+    throw new Error("That activity document is incomplete.");
+  }
+  return {
+    id,
+    type: data.type as ActivityDoc["type"],
+    actorId: data.actorId,
+    actorName: data.actorName,
+    summary: data.summary,
+    createdAt: data.createdAt,
+  };
+}
+
+function readJoinCode(code: string, data: Record<string, unknown>): JoinCodeDoc {
+  if (
+    typeof data.tableId !== "string" ||
+    typeof data.name !== "string" ||
+    typeof data.ownerId !== "string" ||
+    typeof data.seatLimit !== "number" ||
+    typeof data.memberCount !== "number" ||
+    (data.joinPolicy !== "inviteOnly" && data.joinPolicy !== "firstComeFirstServe")
+  ) {
+    throw new Error("That join code could not be found.");
+  }
+  return {
+    code,
+    tableId: data.tableId,
+    name: data.name,
+    ownerId: data.ownerId,
+    seatLimit: data.seatLimit,
+    memberCount: data.memberCount,
+    joinPolicy: data.joinPolicy,
+  };
+}
+
 async function listAccessibleFiles(store: Firestore, tableId: string, uid: string): Promise<FileDoc[]> {
   const filesRef = collection(store, "tables", tableId, "files");
   const [owned, tableWide, shared] = await Promise.all([
@@ -278,6 +347,54 @@ async function listAccessibleFiles(store: Firestore, tableId: string, uid: strin
     map.set(snap.id, readFile(snap.id, snap.data()));
   }
   return sortFiles([...map.values()]);
+}
+
+async function allocateJoinCode(store: Firestore, exclude?: string): Promise<string> {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const code = newJoinCode();
+    if (exclude && code === exclude) continue;
+    const snap = await getDoc(doc(store, "joinCodes", code));
+    if (!snap.exists()) return code;
+  }
+  throw new Error("Could not mint a free join code. Try again.");
+}
+
+function writeActivityInTx(
+  tx: Transaction,
+  store: Firestore,
+  tableId: string,
+  activity: ActivityDoc,
+) {
+  tx.set(doc(store, "tables", tableId, "activity", activity.id), activityPayload(activity));
+}
+
+async function writeActivity(store: Firestore, tableId: string, activity: ActivityDoc) {
+  await setDoc(doc(store, "tables", tableId, "activity", activity.id), activityPayload(activity));
+}
+
+async function syncJoinCodeDoc(store: Firestore, table: TableDoc) {
+  if (!table.joinCode) return;
+  await setDoc(doc(store, "joinCodes", table.joinCode), joinCodePayload(table));
+}
+
+async function ensureTableJoinCode(
+  store: Firestore,
+  table: TableDoc,
+  ownerUid: string,
+): Promise<TableDoc> {
+  if (table.joinCode) {
+    const codeSnap = await getDoc(doc(store, "joinCodes", table.joinCode));
+    if (!codeSnap.exists() && table.ownerId === ownerUid) {
+      await syncJoinCodeDoc(store, table);
+    }
+    return table;
+  }
+  if (table.ownerId !== ownerUid) return table;
+  const code = await allocateJoinCode(store);
+  const next = { ...table, joinCode: code };
+  await updateDoc(doc(store, "tables", table.id), tablePayload(next));
+  await syncJoinCodeDoc(store, next);
+  return next;
 }
 
 function notConfiguredBackend(): Backend {
@@ -306,9 +423,17 @@ function notConfiguredBackend(): Backend {
       missing();
       return undefined as never;
     },
+    async peekJoinCode() {
+      missing();
+      return undefined as never;
+    },
     async openTable() {
       missing();
       return undefined as never;
+    },
+    subscribeTableRoom(_tableId, listener) {
+      listener(null, new Error("Firebase is not configured. Copy .env.example to .env.local."));
+      return () => undefined;
     },
     async createTable() {
       missing();
@@ -317,10 +442,14 @@ function notConfiguredBackend(): Backend {
     async updateTableSettings() {
       missing();
     },
+    async rotateJoinCode() {
+      missing();
+      return undefined as never;
+    },
     async deleteTable() {
       missing();
     },
-    async inviteMember() {
+    async joinWithCode() {
       missing();
       return undefined as never;
     },
@@ -415,9 +544,25 @@ export function createBackend(): Backend {
         if (!id) throw new Error("Choose a table id.");
         const tableSnap = await getDoc(doc(store, "tables", id));
         if (!tableSnap.exists()) {
-          throw new Error("That table could not be found, or it is invite only.");
+          throw new Error("That table could not be found.");
         }
-        return readTable(tableSnap.id, tableSnap.data());
+        const table = readTable(tableSnap.id, tableSnap.data());
+        if (table.joinPolicy !== "firstComeFirstServe") {
+          throw new Error("That table is invite only. Ask for the join code instead.");
+        }
+        return table;
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async peekJoinCode(code) {
+      try {
+        requireUser();
+        const { db: store } = services();
+        const normalized = cleanJoinCode(code);
+        const snap = await getDoc(doc(store, "joinCodes", normalized));
+        if (!snap.exists()) throw new Error("That join code could not be found.");
+        return readJoinCode(normalized, snap.data());
       } catch (error) {
         throw friendly(error);
       }
@@ -431,30 +576,139 @@ export function createBackend(): Backend {
         const tableRef = doc(store, "tables", id);
         const tableSnap = await getDoc(tableRef);
         if (!tableSnap.exists()) throw new Error("That table could not be found, or you are not a member.");
-        const table = readTable(tableSnap.id, tableSnap.data());
+        let table = readTable(tableSnap.id, tableSnap.data());
         const membersSnap = await getDocs(collection(store, "tables", id, "members"));
         const members = sortMembers(membersSnap.docs.map((item) => readMember(item.id, item.data())));
         const me = members.find((member) => member.uid === user.uid);
         if (!me) throw new Error("You are not a member of this table.");
+        table = await ensureTableJoinCode(store, table, user.uid);
         const noticesSnap = await getDocs(collection(store, "tables", id, "notices"));
         const notices = sortNotices(noticesSnap.docs.map((item) => readNotice(item.id, item.data())));
+        const activitySnap = await getDocs(collection(store, "tables", id, "activity"));
+        const activity = sortActivity(activitySnap.docs.map((item) => readActivity(item.id, item.data())));
         const files = await listAccessibleFiles(store, id, user.uid);
         rememberTableId(user.uid, id);
-        return { table, members, me, notices, files };
+        return { table, members, me, notices, files, activity };
       } catch (error) {
         throw friendly(error);
+      }
+    },
+    subscribeTableRoom(tableId, listener) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const id = tableId.trim();
+        if (!id) {
+          listener(null, new Error("Choose a table id."));
+          return () => undefined;
+        }
+
+        let table: TableDoc | null = null;
+        let members: MemberDoc[] = [];
+        let notices: NoticeDoc[] = [];
+        let activity: ActivityDoc[] = [];
+        let files: FileDoc[] = [];
+        let readyFlags = { table: false, members: false, notices: false, activity: false, files: false };
+
+        const publish = () => {
+          if (!readyFlags.table || !readyFlags.members || !readyFlags.notices || !readyFlags.activity || !readyFlags.files) {
+            return;
+          }
+          if (!table) {
+            listener(null, new Error("That table could not be found, or you are not a member."));
+            return;
+          }
+          const me = members.find((member) => member.uid === user.uid);
+          if (!me) {
+            listener(null, new Error("You are not a member of this table."));
+            return;
+          }
+          rememberTableId(user.uid, id);
+          listener({ table, members, me, notices, files, activity });
+        };
+
+        const unsubs = [
+          onSnapshot(
+            doc(store, "tables", id),
+            (snap) => {
+              readyFlags.table = true;
+              if (!snap.exists()) {
+                table = null;
+                publish();
+                return;
+              }
+              table = readTable(snap.id, snap.data());
+              void ensureTableJoinCode(store, table, user.uid)
+                .then((ensured) => {
+                  table = ensured;
+                  publish();
+                })
+                .catch(() => publish());
+            },
+            (error) => listener(null, friendly(error)),
+          ),
+          onSnapshot(
+            collection(store, "tables", id, "members"),
+            (snap) => {
+              readyFlags.members = true;
+              members = sortMembers(snap.docs.map((item) => readMember(item.id, item.data())));
+              publish();
+            },
+            (error) => listener(null, friendly(error)),
+          ),
+          onSnapshot(
+            collection(store, "tables", id, "notices"),
+            (snap) => {
+              readyFlags.notices = true;
+              notices = sortNotices(snap.docs.map((item) => readNotice(item.id, item.data())));
+              publish();
+            },
+            (error) => listener(null, friendly(error)),
+          ),
+          onSnapshot(
+            collection(store, "tables", id, "activity"),
+            (snap) => {
+              readyFlags.activity = true;
+              activity = sortActivity(snap.docs.map((item) => readActivity(item.id, item.data())));
+              publish();
+            },
+            (error) => listener(null, friendly(error)),
+          ),
+        ];
+
+        const refreshFiles = () => {
+          void listAccessibleFiles(store, id, user.uid)
+            .then((next) => {
+              readyFlags.files = true;
+              files = next;
+              publish();
+            })
+            .catch((error) => listener(null, friendly(error)));
+        };
+        refreshFiles();
+        const filesTimer = window.setInterval(refreshFiles, 15_000);
+
+        return () => {
+          for (const unsub of unsubs) unsub();
+          window.clearInterval(filesTimer);
+        };
+      } catch (error) {
+        listener(null, friendly(error));
+        return () => undefined;
       }
     },
     async createTable(name, seatLimit, joinPolicy) {
       try {
         const user = requireUser();
         const { db: store } = services();
+        const joinCode = await allocateJoinCode(store);
         const table = buildTable({
           id: newTableId(),
           name,
           ownerId: user.uid,
           seatLimit,
           joinPolicy,
+          joinCode,
           memberCount: 1,
         });
         const member = buildMember({
@@ -464,16 +718,35 @@ export function createBackend(): Backend {
           seatNote: "",
           email: user.email ?? "",
         });
+        const activity = buildActivity({
+          type: "created",
+          actorId: user.uid,
+          actorName: member.displayName,
+          summary: `${member.displayName} created this table.`,
+        });
         const tableRef = doc(store, "tables", table.id);
         const memberRef = doc(store, "tables", table.id, "members", member.uid);
+        const codeRef = doc(store, "joinCodes", table.joinCode);
         await setDoc(tableRef, tablePayload(table));
         try {
           await setDoc(memberRef, memberPayload(member));
+          await setDoc(codeRef, joinCodePayload(table));
+          await writeActivity(store, table.id, activity);
         } catch (error) {
+          try {
+            await deleteDoc(codeRef);
+          } catch {
+            // ignore
+          }
+          try {
+            await deleteDoc(memberRef);
+          } catch {
+            // ignore
+          }
           try {
             await deleteDoc(tableRef);
           } catch {
-            // Best-effort cleanup if the owner seat could not be written.
+            // ignore
           }
           throw error;
         }
@@ -493,15 +766,55 @@ export function createBackend(): Backend {
         if (nextLimit < opened.table.memberCount) {
           throw new Error("Seat limit cannot be below the people already at the table.");
         }
-        await updateDoc(doc(store, "tables", opened.table.id), {
+        const next: TableDoc = {
+          ...opened.table,
           name: cleanTableName(name),
-          ownerId: opened.table.ownerId,
           seatLimit: nextLimit,
           joinPolicy: cleanJoinPolicy(joinPolicy),
-          memberCount: opened.table.memberCount,
-          createdAt: opened.table.createdAt,
-        });
+        };
+        await updateDoc(doc(store, "tables", opened.table.id), tablePayload(next));
+        await syncJoinCodeDoc(store, next);
+        await writeActivity(
+          store,
+          opened.table.id,
+          buildActivity({
+            type: "settings",
+            actorId: user.uid,
+            actorName: opened.me.displayName,
+            summary: `${opened.me.displayName} updated table settings.`,
+          }),
+        );
         rememberTableId(user.uid, opened.table.id);
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
+    async rotateJoinCode(tableId) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const opened = await this.openTable(tableId);
+        if (opened.me.role !== "owner") throw new Error("Only the owner can make a new join code.");
+        const nextCode = await allocateJoinCode(store, opened.table.joinCode);
+        const next = { ...opened.table, joinCode: nextCode };
+        const batch = writeBatch(store);
+        batch.update(doc(store, "tables", opened.table.id), tablePayload(next));
+        if (opened.table.joinCode) {
+          batch.delete(doc(store, "joinCodes", opened.table.joinCode));
+        }
+        batch.set(doc(store, "joinCodes", nextCode), joinCodePayload(next));
+        await batch.commit();
+        await writeActivity(
+          store,
+          opened.table.id,
+          buildActivity({
+            type: "code_rotated",
+            actorId: user.uid,
+            actorName: opened.me.displayName,
+            summary: `${opened.me.displayName} made a new join code.`,
+          }),
+        );
+        return nextCode;
       } catch (error) {
         throw friendly(error);
       }
@@ -514,6 +827,7 @@ export function createBackend(): Backend {
         if (opened.me.role !== "owner" || opened.table.ownerId !== user.uid) {
           throw new Error("Only the owner can delete this table.");
         }
+        const activitySnap = await getDocs(collection(store, "tables", opened.table.id, "activity"));
         const batch = writeBatch(store);
         for (const uid of memberUids) {
           batch.delete(doc(store, "tables", opened.table.id, "members", uid));
@@ -521,52 +835,23 @@ export function createBackend(): Backend {
         for (const noticeId of noticeIds) {
           batch.delete(doc(store, "tables", opened.table.id, "notices", noticeId));
         }
+        for (const item of activitySnap.docs) {
+          batch.delete(item.ref);
+        }
+        if (opened.table.joinCode) {
+          batch.delete(doc(store, "joinCodes", opened.table.joinCode));
+        }
         batch.delete(doc(store, "tables", opened.table.id));
         await batch.commit();
       } catch (error) {
         throw friendly(error);
       }
     },
-    async inviteMember(tableId, uid, displayName) {
+    async joinWithCode(code) {
       try {
-        const user = requireUser();
-        const { db: store } = services();
-        const invitee = cleanUid(uid);
-        if (invitee === user.uid) throw new Error("You are already at this table.");
-
-        const member = await runTransaction(store, async (tx) => {
-          const tableRef = doc(store, "tables", tableId.trim());
-          const tableSnap = await tx.get(tableRef);
-          if (!tableSnap.exists()) throw new Error("That table could not be found.");
-          const table = readTable(tableSnap.id, tableSnap.data());
-          if (table.ownerId !== user.uid) throw new Error("Only the owner can invite members.");
-
-          const memberRef = doc(store, "tables", table.id, "members", invitee);
-          const existing = await tx.get(memberRef);
-          if (existing.exists()) throw new Error("That account is already a member.");
-          if (table.memberCount >= table.seatLimit) {
-            throw new Error("This table is full.");
-          }
-
-          const next = buildMember({
-            uid: invitee,
-            displayName: displayName.trim() ? displayName : "Member",
-            role: "member",
-            seatNote: "",
-            email: "",
-          });
-          tx.set(memberRef, memberPayload(next));
-          tx.update(tableRef, {
-            name: table.name,
-            ownerId: table.ownerId,
-            seatLimit: table.seatLimit,
-            joinPolicy: table.joinPolicy,
-            memberCount: table.memberCount + 1,
-            createdAt: table.createdAt,
-          });
-          return next;
-        });
-        return member;
+        const peeked = await this.peekJoinCode(code);
+        const member = await this.joinTable(peeked.tableId);
+        return { tableId: peeked.tableId, member };
       } catch (error) {
         throw seatRaceFriendly(error);
       }
@@ -582,13 +867,9 @@ export function createBackend(): Backend {
           const tableRef = doc(store, "tables", id);
           const tableSnap = await tx.get(tableRef);
           if (!tableSnap.exists()) {
-            throw new Error("That table could not be found, or it is invite only.");
+            throw new Error("That table could not be found.");
           }
           const table = readTable(tableSnap.id, tableSnap.data());
-          if (table.joinPolicy !== "firstComeFirstServe") {
-            throw new Error("This table is invite only. Ask the owner to invite your account id.");
-          }
-
           const memberRef = doc(store, "tables", table.id, "members", user.uid);
           const existing = await tx.get(memberRef);
           if (existing.exists()) throw new Error("You are already at this table.");
@@ -603,17 +884,27 @@ export function createBackend(): Backend {
             seatNote: "",
             email: user.email ?? "",
           });
+          const bumped = tableFieldsForCountBump(table, table.memberCount + 1);
           tx.set(memberRef, memberPayload(next));
-          tx.update(tableRef, {
-            name: table.name,
-            ownerId: table.ownerId,
-            seatLimit: table.seatLimit,
-            joinPolicy: table.joinPolicy,
-            memberCount: table.memberCount + 1,
-            createdAt: table.createdAt,
-          });
+          tx.update(tableRef, bumped);
+          writeActivityInTx(
+            tx,
+            store,
+            table.id,
+            buildActivity({
+              type: "joined",
+              actorId: user.uid,
+              actorName: next.displayName,
+              summary: `${next.displayName} took a seat.`,
+            }),
+          );
           return next;
         });
+
+        const tableSnap = await getDoc(doc(store, "tables", id));
+        if (tableSnap.exists()) {
+          await syncJoinCodeDoc(store, readTable(tableSnap.id, tableSnap.data()));
+        }
         rememberTableId(user.uid, id);
         return member;
       } catch (error) {
@@ -625,6 +916,19 @@ export function createBackend(): Backend {
         const user = requireUser();
         const { db: store } = services();
         const target = cleanUid(uid);
+        const opened = await this.openTable(tableId);
+        if (opened.me.role !== "owner") throw new Error("Only the owner can remove members.");
+        const targetMember = opened.members.find((member) => member.uid === target);
+        await writeActivity(
+          store,
+          opened.table.id,
+          buildActivity({
+            type: "removed",
+            actorId: user.uid,
+            actorName: opened.me.displayName,
+            summary: `${opened.me.displayName} removed ${targetMember?.displayName ?? "a member"}.`,
+          }),
+        );
         await runTransaction(store, async (tx) => {
           const tableRef = doc(store, "tables", tableId.trim());
           const tableSnap = await tx.get(tableRef);
@@ -638,15 +942,12 @@ export function createBackend(): Backend {
           const memberSnap = await tx.get(memberRef);
           if (!memberSnap.exists()) throw new Error("That member is not at this table.");
           tx.delete(memberRef);
-          tx.update(tableRef, {
-            name: table.name,
-            ownerId: table.ownerId,
-            seatLimit: table.seatLimit,
-            joinPolicy: table.joinPolicy,
-            memberCount: Math.max(1, table.memberCount - 1),
-            createdAt: table.createdAt,
-          });
+          tx.update(tableRef, tableFieldsForCountBump(table, Math.max(1, table.memberCount - 1)));
         });
+        const tableSnap = await getDoc(doc(store, "tables", tableId.trim()));
+        if (tableSnap.exists()) {
+          await syncJoinCodeDoc(store, readTable(tableSnap.id, tableSnap.data()));
+        }
       } catch (error) {
         throw friendly(error);
       }
@@ -655,6 +956,20 @@ export function createBackend(): Backend {
       try {
         const user = requireUser();
         const { db: store } = services();
+        const opened = await this.openTable(tableId);
+        if (opened.table.ownerId === user.uid) {
+          throw new Error("The owner cannot leave. Delete the table, or transfer ownership in a later version.");
+        }
+        await writeActivity(
+          store,
+          opened.table.id,
+          buildActivity({
+            type: "left",
+            actorId: user.uid,
+            actorName: opened.me.displayName,
+            summary: `${opened.me.displayName} left the table.`,
+          }),
+        );
         await runTransaction(store, async (tx) => {
           const tableRef = doc(store, "tables", tableId.trim());
           const tableSnap = await tx.get(tableRef);
@@ -667,15 +982,12 @@ export function createBackend(): Backend {
           const memberSnap = await tx.get(memberRef);
           if (!memberSnap.exists()) throw new Error("You are not a member of this table.");
           tx.delete(memberRef);
-          tx.update(tableRef, {
-            name: table.name,
-            ownerId: table.ownerId,
-            seatLimit: table.seatLimit,
-            joinPolicy: table.joinPolicy,
-            memberCount: Math.max(1, table.memberCount - 1),
-            createdAt: table.createdAt,
-          });
+          tx.update(tableRef, tableFieldsForCountBump(table, Math.max(1, table.memberCount - 1)));
         });
+        const tableSnap = await getDoc(doc(store, "tables", tableId.trim()));
+        if (tableSnap.exists()) {
+          await syncJoinCodeDoc(store, readTable(tableSnap.id, tableSnap.data()));
+        }
       } catch (error) {
         throw friendly(error);
       }
@@ -699,6 +1011,7 @@ export function createBackend(): Backend {
     async sendNotice(tableId, subject, body) {
       try {
         const user = requireUser();
+        const { db: store } = services();
         const base = noticeWorkerUrl();
         if (!base) {
           throw new Error("Notice sending is not configured yet.");
@@ -731,6 +1044,17 @@ export function createBackend(): Backend {
         if (typeof payload.noticeId !== "string" || typeof payload.recipientCount !== "number") {
           throw new Error("The notice server returned an incomplete response.");
         }
+        const opened = await this.openTable(tableId);
+        await writeActivity(
+          store,
+          tableId.trim(),
+          buildActivity({
+            type: "notice",
+            actorId: user.uid,
+            actorName: opened.me.displayName,
+            summary: `${opened.me.displayName} sent a notice.`,
+          }),
+        );
         return {
           noticeId: payload.noticeId,
           recipientCount: payload.recipientCount,

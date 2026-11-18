@@ -12,10 +12,12 @@ export type TableDoc = {
   id: string;
   name: string;
   ownerId: string;
+  /** Short code people use to find and join this table. */
+  joinCode: string;
   /** Max people at the table, including the owner. */
   seatLimit: number;
   joinPolicy: JoinPolicy;
-  /** Living member count; kept in sync on join/leave/invite/remove. */
+  /** Living member count; kept in sync on join/leave/remove. */
   memberCount: number;
   createdAt: number;
 };
@@ -50,4 +52,33 @@ export type FileDoc = {
   visibility: FileVisibility;
   sharedWith: string[];
   createdAt: number;
+};
+
+export type ActivityType =
+  | "created"
+  | "joined"
+  | "left"
+  | "removed"
+  | "notice"
+  | "settings"
+  | "code_rotated";
+
+export type ActivityDoc = {
+  id: string;
+  type: ActivityType;
+  actorId: string;
+  actorName: string;
+  summary: string;
+  createdAt: number;
+};
+
+/** Public peek fields stored under joinCodes/{code}. */
+export type JoinCodeDoc = {
+  code: string;
+  tableId: string;
+  name: string;
+  seatLimit: number;
+  memberCount: number;
+  joinPolicy: JoinPolicy;
+  ownerId: string;
 };

@@ -38,9 +38,11 @@ describe("table helpers", () => {
       joinPolicy: "inviteOnly",
       createdAt: 10,
     });
+    assert.equal(table.joinCode.length, 6);
     assert.deepEqual(tablePayload(table), {
       name: "Campaign",
       ownerId: "u1",
+      joinCode: table.joinCode,
       seatLimit: 4,
       joinPolicy: "inviteOnly",
       memberCount: 1,
