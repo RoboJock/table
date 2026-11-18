@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import type { MemberDoc, NoticeDoc, TableDoc } from "../lib/types";
+import { joinPolicyLabel, seatsRemaining } from "../lib/tables";
+import type { JoinPolicy, MemberDoc, NoticeDoc, TableDoc } from "../lib/types";
 import { useTableApp } from "./AppShell";
 
 export function TableRoom() {
@@ -16,6 +17,8 @@ export function TableRoom() {
   const [notices, setNotices] = useState<NoticeDoc[]>([]);
   const [me, setMe] = useState<MemberDoc | null>(null);
   const [rename, setRename] = useState("");
+  const [seatLimit, setSeatLimit] = useState("4");
+  const [joinPolicy, setJoinPolicy] = useState<JoinPolicy>("inviteOnly");
   const [displayName, setDisplayName] = useState("");
   const [seatNote, setSeatNote] = useState("");
   const [email, setEmail] = useState("");
@@ -34,6 +37,8 @@ export function TableRoom() {
     setNotices(opened.notices);
     setMe(opened.me);
     setRename(opened.table.name);
+    setSeatLimit(String(opened.table.seatLimit));
+    setJoinPolicy(opened.table.joinPolicy);
     setDisplayName(opened.me.displayName);
     setSeatNote(opened.me.seatNote);
     setEmail(opened.me.email || user?.email || "");
@@ -110,6 +115,10 @@ export function TableRoom() {
         <div className="row" style={{ justifyContent: "space-between" }}>
           <div>
             <h2>{table.name}</h2>
+            <p className="muted">
+              {joinPolicyLabel(table.joinPolicy)} · {table.memberCount}/{table.seatLimit} seats filled
+              {seatsRemaining(table) === 0 ? " · full" : ` · ${seatsRemaining(table)} open`}
+            </p>
             <p className="muted">Table id</p>
             <p className="mono">{table.id}</p>
           </div>
@@ -119,18 +128,57 @@ export function TableRoom() {
         </div>
         {me.role === "owner" ? (
           <form
-            className="row"
+            className="stack"
             onSubmit={(event) => {
               event.preventDefault();
-              void run(() => backend.renameTable(table.id, rename), "Table renamed.");
+              void run(
+                () =>
+                  backend.updateTableSettings(table.id, rename, Number(seatLimit), joinPolicy),
+                "Table settings saved.",
+              );
             }}
           >
-            <label style={{ flex: 1, minWidth: "14rem" }}>
-              Rename
+            <label>
+              Table name
               <input value={rename} onChange={(event) => setRename(event.target.value)} maxLength={40} />
             </label>
+            <label>
+              Seat limit
+              <input
+                type="number"
+                min={table.memberCount}
+                max={40}
+                value={seatLimit}
+                onChange={(event) => setSeatLimit(event.target.value)}
+              />
+            </label>
+            <fieldset className="join-policy">
+              <legend>Who can sit</legend>
+              <label className="choice">
+                <input
+                  type="radio"
+                  name="roomJoinPolicy"
+                  checked={joinPolicy === "inviteOnly"}
+                  onChange={() => setJoinPolicy("inviteOnly")}
+                />
+                <span>
+                  <strong>Invite only</strong>
+                </span>
+              </label>
+              <label className="choice">
+                <input
+                  type="radio"
+                  name="roomJoinPolicy"
+                  checked={joinPolicy === "firstComeFirstServe"}
+                  onChange={() => setJoinPolicy("firstComeFirstServe")}
+                />
+                <span>
+                  <strong>First come, first serve</strong>
+                </span>
+              </label>
+            </fieldset>
             <button type="submit" className="secondary" disabled={busy}>
-              Save name
+              Save settings
             </button>
           </form>
         ) : null}
@@ -305,8 +353,9 @@ export function TableRoom() {
         <section className="panel stack">
           <h2>Invite</h2>
           <p className="muted">
-            Ask the other person to sign in and send you their account id from the home page. Paste it
-            here. They can add an email for reminders after they join.
+            {seatsRemaining(table) === 0
+              ? "This table is full. Raise the seat limit before inviting someone else."
+              : "Ask the other person to sign in and send you their account id from the home page. Paste it here. They can add an email for reminders after they join."}
           </p>
           <form
             className="stack"
@@ -335,7 +384,7 @@ export function TableRoom() {
                 maxLength={40}
               />
             </label>
-            <button type="submit" disabled={busy}>
+            <button type="submit" disabled={busy || seatsRemaining(table) === 0}>
               Invite member
             </button>
           </form>

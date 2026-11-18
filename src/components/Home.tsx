@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { readRecentTableIds } from "../lib/tables";
-import type { TableDoc } from "../lib/types";
+import { joinPolicyLabel, readRecentTableIds, seatsRemaining } from "../lib/tables";
+import type { JoinPolicy, TableDoc } from "../lib/types";
 import { useTableApp } from "./AppShell";
 
 export function Home() {
@@ -12,7 +12,10 @@ export function Home() {
   const router = useRouter();
   const [owned, setOwned] = useState<TableDoc[]>([]);
   const [name, setName] = useState("");
+  const [seatLimit, setSeatLimit] = useState("4");
+  const [joinPolicy, setJoinPolicy] = useState<JoinPolicy>("inviteOnly");
   const [openId, setOpenId] = useState("");
+  const [joinPreview, setJoinPreview] = useState<TableDoc | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,8 +42,8 @@ export function Home() {
       <section className="hero panel">
         <h1>A shared table for a small group</h1>
         <p className="lede">
-          Create a table, invite people by account id, and let each member edit only their own seat.
-          Signed-out visitors and strangers get nothing.
+          Create a table with a seat limit, invite people or open first come first serve seats, and
+          let each member edit only their own place.
         </p>
         <Link className="button" href="/login">
           Sign in to start
@@ -54,7 +57,7 @@ export function Home() {
     setBusy(true);
     setMessage("");
     try {
-      const table = await backend.createTable(name);
+      const table = await backend.createTable(name, Number(seatLimit), joinPolicy);
       setName("");
       router.push(`/table?id=${encodeURIComponent(table.id)}`);
     } catch (error) {
@@ -64,14 +67,49 @@ export function Home() {
     }
   }
 
-  function openTable(event: React.FormEvent) {
+  async function lookUpTable(event: React.FormEvent) {
     event.preventDefault();
     const id = openId.trim();
     if (!id) {
       setMessage("Paste a table id first.");
       return;
     }
-    router.push(`/table?id=${encodeURIComponent(id)}`);
+    setBusy(true);
+    setMessage("");
+    setJoinPreview(null);
+    try {
+      const opened = await backend.openTable(id);
+      router.push(`/table?id=${encodeURIComponent(opened.table.id)}`);
+    } catch {
+      try {
+        const peeked = await backend.peekTable(id);
+        setJoinPreview(peeked);
+        setMessage("");
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "Could not open that table.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function joinFirstCome() {
+    if (!joinPreview) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      await backend.joinTable(joinPreview.id);
+      router.push(`/table?id=${encodeURIComponent(joinPreview.id)}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not join that table.");
+      try {
+        setJoinPreview(await backend.peekTable(joinPreview.id));
+      } catch {
+        setJoinPreview(null);
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -113,6 +151,44 @@ export function Home() {
               maxLength={40}
             />
           </label>
+          <label>
+            How many seats
+            <input
+              type="number"
+              min={1}
+              max={40}
+              value={seatLimit}
+              onChange={(event) => setSeatLimit(event.target.value)}
+              required
+            />
+          </label>
+          <fieldset className="join-policy">
+            <legend>Who can sit</legend>
+            <label className="choice">
+              <input
+                type="radio"
+                name="joinPolicy"
+                checked={joinPolicy === "inviteOnly"}
+                onChange={() => setJoinPolicy("inviteOnly")}
+              />
+              <span>
+                <strong>Invite only</strong>
+                <span className="muted"> You add people by account id.</span>
+              </span>
+            </label>
+            <label className="choice">
+              <input
+                type="radio"
+                name="joinPolicy"
+                checked={joinPolicy === "firstComeFirstServe"}
+                onChange={() => setJoinPolicy("firstComeFirstServe")}
+              />
+              <span>
+                <strong>First come, first serve</strong>
+                <span className="muted"> Anyone with the table id can grab an open seat.</span>
+              </span>
+            </label>
+          </fieldset>
           <button type="submit" disabled={busy}>
             Create table
           </button>
@@ -120,19 +196,40 @@ export function Home() {
       </section>
 
       <section className="panel stack">
-        <h2>Open a table</h2>
+        <h2>Open or join a table</h2>
         <p className="muted">
-          Owners see their tables below. Invited members open the table id the owner shared.
+          Paste a table id. If you already belong, you go in. If it is first come, first serve, you
+          can take an open seat.
         </p>
-        <form className="stack" onSubmit={openTable}>
+        <form className="stack" onSubmit={(event) => void lookUpTable(event)}>
           <label>
             Table id
             <input value={openId} onChange={(event) => setOpenId(event.target.value)} placeholder="Paste an id" />
           </label>
-          <button type="submit" className="secondary">
-            Open
+          <button type="submit" className="secondary" disabled={busy}>
+            Look up
           </button>
         </form>
+        {joinPreview ? (
+          <div className="stack join-preview">
+            <p>
+              <strong>{joinPreview.name}</strong>
+            </p>
+            <p className="muted">
+              {joinPolicyLabel(joinPreview.joinPolicy)} · {seatsRemaining(joinPreview)} of{" "}
+              {joinPreview.seatLimit} seats open
+            </p>
+            {joinPreview.joinPolicy === "firstComeFirstServe" && seatsRemaining(joinPreview) > 0 ? (
+              <button type="button" disabled={busy} onClick={() => void joinFirstCome()}>
+                Take a seat
+              </button>
+            ) : joinPreview.joinPolicy === "firstComeFirstServe" ? (
+              <p className="status">This table is full.</p>
+            ) : (
+              <p className="muted">Invite only — ask the owner to add your account id.</p>
+            )}
+          </div>
+        ) : null}
         {recent.length ? (
           <div className="stack">
             <p className="muted">Recent on this browser</p>
@@ -160,7 +257,9 @@ export function Home() {
               <li key={table.id}>
                 <Link href={`/table?id=${encodeURIComponent(table.id)}`}>
                   <strong>{table.name}</strong>
-                  <span className="mono">{table.id}</span>
+                  <span className="mono">
+                    {table.memberCount}/{table.seatLimit} · {table.id}
+                  </span>
                 </Link>
               </li>
             ))}

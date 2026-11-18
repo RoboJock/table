@@ -319,6 +319,41 @@ button:disabled {
   margin: 0.35rem 0 0;
 }
 
+.join-policy {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  margin: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.join-policy legend {
+  padding: 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.choice {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.choice input {
+  margin-top: 0.35rem;
+}
+
+.choice strong {
+  display: inline;
+}
+
+.join-preview {
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--line);
+}
+
 .pill {
   display: inline-flex;
   align-items: center;

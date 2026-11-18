@@ -36,9 +36,30 @@ service cloud.firestore {
         && (value.size() == 0 || value.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$'));
     }
 
-    // Web clients store whole numbers as floats; REST/admin may use ints.
     function numberOk(value) {
       return (value is int || value is float) && value > 0;
+    }
+
+    function seatLimitOk(value) {
+      return (value is int || value is float) && value >= 1 && value <= 40;
+    }
+
+    function memberCountOk(value) {
+      return (value is int || value is float) && value >= 1 && value <= 40;
+    }
+
+    function joinPolicyOk(value) {
+      return value in ['inviteOnly', 'firstComeFirstServe'];
+    }
+
+    function tableDataOk(data) {
+      return data.keys().hasOnly(['name', 'ownerId', 'seatLimit', 'joinPolicy', 'memberCount', 'createdAt'])
+        && nameOk(data.name)
+        && seatLimitOk(data.seatLimit)
+        && joinPolicyOk(data.joinPolicy)
+        && memberCountOk(data.memberCount)
+        && numberOk(data.createdAt)
+        && data.memberCount <= data.seatLimit;
     }
 
     function memberCreateOk(tableId, uid) {
@@ -58,6 +79,12 @@ service cloud.firestore {
             isOwner(tableId)
             && uid != request.auth.uid
             && request.resource.data.role == 'member'
+          )
+          || (
+            // First come, first serve: signed-in person claims their own member seat.
+            uid == request.auth.uid
+            && request.resource.data.role == 'member'
+            && get(/databases/$(database)/documents/tables/$(tableId)).data.joinPolicy == 'firstComeFirstServe'
           )
         );
     }
@@ -91,28 +118,55 @@ service cloud.firestore {
         && request.resource.data.to.size() <= 40;
     }
 
-    match /tables/{tableId} {
-      // OwnerId equality lets "tables I own" queries pass rule checks.
-      // Membership still covers invited members opening a table by id.
-      allow read: if isMember(tableId)
-        || (signedIn() && resource.data.ownerId == request.auth.uid);
-
-      allow create: if signedIn()
-        && request.resource.data.keys().hasOnly(['name', 'ownerId', 'createdAt'])
-        && nameOk(request.resource.data.name)
-        && request.resource.data.ownerId == request.auth.uid
-        && numberOk(request.resource.data.createdAt);
-
-      allow update: if isOwner(tableId)
+    function ownerTableUpdateOk(tableId) {
+      return isOwner(tableId)
         && request.resource.data.ownerId == resource.data.ownerId
         && request.resource.data.createdAt == resource.data.createdAt
-        && nameOk(request.resource.data.name)
-        && request.resource.data.keys().hasOnly(['name', 'ownerId', 'createdAt']);
+        && tableDataOk(request.resource.data)
+        && request.resource.data.seatLimit >= resource.data.memberCount
+        && (
+          request.resource.data.memberCount == resource.data.memberCount
+          || request.resource.data.memberCount == resource.data.memberCount + 1
+          || request.resource.data.memberCount == resource.data.memberCount - 1
+        );
+    }
+
+    // Seat-count bump used with invite / first-come join in the same transaction.
+    function memberCountBumpOk() {
+      return signedIn()
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.seatLimit == resource.data.seatLimit
+        && request.resource.data.joinPolicy == resource.data.joinPolicy
+        && tableDataOk(request.resource.data)
+        && (
+          request.resource.data.memberCount == resource.data.memberCount + 1
+          || request.resource.data.memberCount == resource.data.memberCount - 1
+        );
+    }
+
+    match /tables/{tableId} {
+      // Members and owners can read. First-come tables are also readable so
+      // signed-in people can see seats left before they join.
+      allow read: if isMember(tableId)
+        || (signedIn() && resource.data.ownerId == request.auth.uid)
+        || (signedIn() && resource.data.joinPolicy == 'firstComeFirstServe');
+
+      allow create: if signedIn()
+        && tableDataOk(request.resource.data)
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.memberCount == 1;
+
+      allow update: if ownerTableUpdateOk(tableId) || memberCountBumpOk();
 
       allow delete: if isOwner(tableId);
 
       match /members/{uid} {
-        allow read: if isMember(tableId);
+        // Members can read the whole list. A signed-in user may read only their
+        // own seat doc so first-come join can check "am I already here?"
+        allow read: if isMember(tableId)
+          || (signedIn() && request.auth.uid == uid);
 
         allow create: if signedIn() && memberCreateOk(tableId, uid);
 
@@ -122,8 +176,6 @@ service cloud.firestore {
           || (signedIn() && request.auth.uid == uid);
       }
 
-      // Notice log: members may create a log entry after the Worker sends mail.
-      // Clients still cannot update notices. Email sending stays on the Worker.
       match /notices/{noticeId} {
         allow read: if isMember(tableId);
         allow create: if isMember(tableId) && noticeCreateOk();

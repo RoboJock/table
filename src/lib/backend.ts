@@ -17,6 +17,7 @@ import {
   getDocs,
   getFirestore,
   query,
+  runTransaction,
   setDoc,
   updateDoc,
   where,
@@ -28,6 +29,8 @@ import {
   buildTable,
   cleanDisplayName,
   cleanEmail,
+  cleanJoinPolicy,
+  cleanSeatLimit,
   cleanSeatNote,
   cleanTableName,
   cleanUid,
@@ -38,7 +41,7 @@ import {
   sortNotices,
   tablePayload,
 } from "./tables";
-import type { AppUser, MemberDoc, NoticeDoc, TableDoc } from "./types";
+import type { AppUser, JoinPolicy, MemberDoc, NoticeDoc, TableDoc } from "./types";
 
 export type SendNoticeResult = {
   noticeId: string;
@@ -52,16 +55,23 @@ export type Backend = {
   signIn(email: string, password: string): Promise<void>;
   signOut(): Promise<void>;
   listOwnedTables(): Promise<TableDoc[]>;
+  peekTable(tableId: string): Promise<TableDoc>;
   openTable(tableId: string): Promise<{
     table: TableDoc;
     members: MemberDoc[];
     me: MemberDoc;
     notices: NoticeDoc[];
   }>;
-  createTable(name: string): Promise<TableDoc>;
-  renameTable(tableId: string, name: string): Promise<void>;
+  createTable(name: string, seatLimit: number, joinPolicy: JoinPolicy): Promise<TableDoc>;
+  updateTableSettings(
+    tableId: string,
+    name: string,
+    seatLimit: number,
+    joinPolicy: JoinPolicy,
+  ): Promise<void>;
   deleteTable(tableId: string, memberUids: string[], noticeIds: string[]): Promise<void>;
   inviteMember(tableId: string, uid: string, displayName: string): Promise<MemberDoc>;
+  joinTable(tableId: string): Promise<MemberDoc>;
   removeMember(tableId: string, uid: string): Promise<void>;
   leaveTable(tableId: string): Promise<void>;
   updateSeat(tableId: string, displayName: string, seatNote: string, email: string): Promise<void>;
@@ -97,6 +107,14 @@ function friendly(error: unknown): Error {
   if (code && text[code]) return new Error(text[code]);
   if (error instanceof Error && error.message) return error;
   return new Error("Something went wrong. Try again.");
+}
+
+/** Last-seat races often surface as permission-denied on the losing write. */
+function seatRaceFriendly(error: unknown): Error {
+  if (error instanceof Error && /full/i.test(error.message)) return error;
+  const code = typeof error === "object" && error && "code" in error ? String(error.code) : "";
+  if (code === "permission-denied") return new Error("This table is full.");
+  return friendly(error);
 }
 
 function noticeWorkerUrl(): string {
@@ -135,7 +153,21 @@ function readTable(id: string, data: Record<string, unknown>): TableDoc {
   if (typeof data.name !== "string" || typeof data.ownerId !== "string" || typeof data.createdAt !== "number") {
     throw new Error("That table document is incomplete.");
   }
-  return { id, name: data.name, ownerId: data.ownerId, createdAt: data.createdAt };
+  const seatLimit = typeof data.seatLimit === "number" ? data.seatLimit : 40;
+  const memberCount = typeof data.memberCount === "number" ? data.memberCount : 1;
+  const joinPolicy =
+    data.joinPolicy === "inviteOnly" || data.joinPolicy === "firstComeFirstServe"
+      ? data.joinPolicy
+      : "inviteOnly";
+  return {
+    id,
+    name: data.name,
+    ownerId: data.ownerId,
+    seatLimit,
+    joinPolicy,
+    memberCount,
+    createdAt: data.createdAt,
+  };
 }
 
 function readMember(uid: string, data: Record<string, unknown>): MemberDoc {
@@ -200,6 +232,10 @@ function notConfiguredBackend(): Backend {
     async listOwnedTables() {
       return [];
     },
+    async peekTable() {
+      missing();
+      return undefined as never;
+    },
     async openTable() {
       missing();
       return undefined as never;
@@ -208,13 +244,17 @@ function notConfiguredBackend(): Backend {
       missing();
       return undefined as never;
     },
-    async renameTable() {
+    async updateTableSettings() {
       missing();
     },
     async deleteTable() {
       missing();
     },
     async inviteMember() {
+      missing();
+      return undefined as never;
+    },
+    async joinTable() {
       missing();
       return undefined as never;
     },
@@ -284,6 +324,21 @@ export function createBackend(): Backend {
         throw friendly(error);
       }
     },
+    async peekTable(tableId) {
+      try {
+        requireUser();
+        const { db: store } = services();
+        const id = tableId.trim();
+        if (!id) throw new Error("Choose a table id.");
+        const tableSnap = await getDoc(doc(store, "tables", id));
+        if (!tableSnap.exists()) {
+          throw new Error("That table could not be found, or it is invite only.");
+        }
+        return readTable(tableSnap.id, tableSnap.data());
+      } catch (error) {
+        throw friendly(error);
+      }
+    },
     async openTable(tableId) {
       try {
         const user = requireUser();
@@ -306,7 +361,7 @@ export function createBackend(): Backend {
         throw friendly(error);
       }
     },
-    async createTable(name) {
+    async createTable(name, seatLimit, joinPolicy) {
       try {
         const user = requireUser();
         const { db: store } = services();
@@ -314,6 +369,9 @@ export function createBackend(): Backend {
           id: newTableId(),
           name,
           ownerId: user.uid,
+          seatLimit,
+          joinPolicy,
+          memberCount: 1,
         });
         const member = buildMember({
           uid: user.uid,
@@ -322,8 +380,6 @@ export function createBackend(): Backend {
           seatNote: "",
           email: user.email ?? "",
         });
-        // Write the table first, then the owner member doc. A single batch fails
-        // rules that get() the new table while creating its first member.
         const tableRef = doc(store, "tables", table.id);
         const memberRef = doc(store, "tables", table.id, "members", member.uid);
         await setDoc(tableRef, tablePayload(table));
@@ -343,15 +399,22 @@ export function createBackend(): Backend {
         throw friendly(error);
       }
     },
-    async renameTable(tableId, name) {
+    async updateTableSettings(tableId, name, seatLimit, joinPolicy) {
       try {
         const user = requireUser();
         const { db: store } = services();
         const opened = await this.openTable(tableId);
-        if (opened.me.role !== "owner") throw new Error("Only the owner can rename this table.");
+        if (opened.me.role !== "owner") throw new Error("Only the owner can change table settings.");
+        const nextLimit = cleanSeatLimit(seatLimit);
+        if (nextLimit < opened.table.memberCount) {
+          throw new Error("Seat limit cannot be below the people already at the table.");
+        }
         await updateDoc(doc(store, "tables", opened.table.id), {
           name: cleanTableName(name),
           ownerId: opened.table.ownerId,
+          seatLimit: nextLimit,
+          joinPolicy: cleanJoinPolicy(joinPolicy),
+          memberCount: opened.table.memberCount,
           createdAt: opened.table.createdAt,
         });
         rememberTableId(user.uid, opened.table.id);
@@ -384,35 +447,122 @@ export function createBackend(): Backend {
       try {
         const user = requireUser();
         const { db: store } = services();
-        const opened = await this.openTable(tableId);
-        if (opened.me.role !== "owner") throw new Error("Only the owner can invite members.");
         const invitee = cleanUid(uid);
         if (invitee === user.uid) throw new Error("You are already at this table.");
-        if (opened.members.some((member) => member.uid === invitee)) {
-          throw new Error("That account is already a member.");
-        }
-        const member = buildMember({
-          uid: invitee,
-          displayName: displayName.trim() ? displayName : "Member",
-          role: "member",
-          seatNote: "",
-          email: "",
+
+        const member = await runTransaction(store, async (tx) => {
+          const tableRef = doc(store, "tables", tableId.trim());
+          const tableSnap = await tx.get(tableRef);
+          if (!tableSnap.exists()) throw new Error("That table could not be found.");
+          const table = readTable(tableSnap.id, tableSnap.data());
+          if (table.ownerId !== user.uid) throw new Error("Only the owner can invite members.");
+
+          const memberRef = doc(store, "tables", table.id, "members", invitee);
+          const existing = await tx.get(memberRef);
+          if (existing.exists()) throw new Error("That account is already a member.");
+          if (table.memberCount >= table.seatLimit) {
+            throw new Error("This table is full.");
+          }
+
+          const next = buildMember({
+            uid: invitee,
+            displayName: displayName.trim() ? displayName : "Member",
+            role: "member",
+            seatNote: "",
+            email: "",
+          });
+          tx.set(memberRef, memberPayload(next));
+          tx.update(tableRef, {
+            name: table.name,
+            ownerId: table.ownerId,
+            seatLimit: table.seatLimit,
+            joinPolicy: table.joinPolicy,
+            memberCount: table.memberCount + 1,
+            createdAt: table.createdAt,
+          });
+          return next;
         });
-        await setDoc(doc(store, "tables", opened.table.id, "members", member.uid), memberPayload(member));
         return member;
       } catch (error) {
-        throw friendly(error);
+        throw seatRaceFriendly(error);
+      }
+    },
+    async joinTable(tableId) {
+      try {
+        const user = requireUser();
+        const { db: store } = services();
+        const id = tableId.trim();
+        if (!id) throw new Error("Choose a table id.");
+
+        const member = await runTransaction(store, async (tx) => {
+          const tableRef = doc(store, "tables", id);
+          const tableSnap = await tx.get(tableRef);
+          if (!tableSnap.exists()) {
+            throw new Error("That table could not be found, or it is invite only.");
+          }
+          const table = readTable(tableSnap.id, tableSnap.data());
+          if (table.joinPolicy !== "firstComeFirstServe") {
+            throw new Error("This table is invite only. Ask the owner to invite your account id.");
+          }
+
+          const memberRef = doc(store, "tables", table.id, "members", user.uid);
+          const existing = await tx.get(memberRef);
+          if (existing.exists()) throw new Error("You are already at this table.");
+          if (table.memberCount >= table.seatLimit) {
+            throw new Error("This table is full.");
+          }
+
+          const next = buildMember({
+            uid: user.uid,
+            displayName: user.displayName?.trim() || "Member",
+            role: "member",
+            seatNote: "",
+            email: user.email ?? "",
+          });
+          tx.set(memberRef, memberPayload(next));
+          tx.update(tableRef, {
+            name: table.name,
+            ownerId: table.ownerId,
+            seatLimit: table.seatLimit,
+            joinPolicy: table.joinPolicy,
+            memberCount: table.memberCount + 1,
+            createdAt: table.createdAt,
+          });
+          return next;
+        });
+        rememberTableId(user.uid, id);
+        return member;
+      } catch (error) {
+        throw seatRaceFriendly(error);
       }
     },
     async removeMember(tableId, uid) {
       try {
         const user = requireUser();
         const { db: store } = services();
-        const opened = await this.openTable(tableId);
-        if (opened.me.role !== "owner") throw new Error("Only the owner can remove members.");
         const target = cleanUid(uid);
-        if (target === opened.table.ownerId) throw new Error("The owner cannot be removed. Delete the table instead.");
-        await deleteDoc(doc(store, "tables", opened.table.id, "members", target));
+        await runTransaction(store, async (tx) => {
+          const tableRef = doc(store, "tables", tableId.trim());
+          const tableSnap = await tx.get(tableRef);
+          if (!tableSnap.exists()) throw new Error("That table could not be found.");
+          const table = readTable(tableSnap.id, tableSnap.data());
+          if (table.ownerId !== user.uid) throw new Error("Only the owner can remove members.");
+          if (target === table.ownerId) {
+            throw new Error("The owner cannot be removed. Delete the table instead.");
+          }
+          const memberRef = doc(store, "tables", table.id, "members", target);
+          const memberSnap = await tx.get(memberRef);
+          if (!memberSnap.exists()) throw new Error("That member is not at this table.");
+          tx.delete(memberRef);
+          tx.update(tableRef, {
+            name: table.name,
+            ownerId: table.ownerId,
+            seatLimit: table.seatLimit,
+            joinPolicy: table.joinPolicy,
+            memberCount: Math.max(1, table.memberCount - 1),
+            createdAt: table.createdAt,
+          });
+        });
       } catch (error) {
         throw friendly(error);
       }
@@ -421,11 +571,27 @@ export function createBackend(): Backend {
       try {
         const user = requireUser();
         const { db: store } = services();
-        const opened = await this.openTable(tableId);
-        if (opened.me.role === "owner") {
-          throw new Error("The owner cannot leave. Delete the table, or transfer ownership in a later version.");
-        }
-        await deleteDoc(doc(store, "tables", opened.table.id, "members", user.uid));
+        await runTransaction(store, async (tx) => {
+          const tableRef = doc(store, "tables", tableId.trim());
+          const tableSnap = await tx.get(tableRef);
+          if (!tableSnap.exists()) throw new Error("That table could not be found.");
+          const table = readTable(tableSnap.id, tableSnap.data());
+          if (table.ownerId === user.uid) {
+            throw new Error("The owner cannot leave. Delete the table, or transfer ownership in a later version.");
+          }
+          const memberRef = doc(store, "tables", table.id, "members", user.uid);
+          const memberSnap = await tx.get(memberRef);
+          if (!memberSnap.exists()) throw new Error("You are not a member of this table.");
+          tx.delete(memberRef);
+          tx.update(tableRef, {
+            name: table.name,
+            ownerId: table.ownerId,
+            seatLimit: table.seatLimit,
+            joinPolicy: table.joinPolicy,
+            memberCount: Math.max(1, table.memberCount - 1),
+            createdAt: table.createdAt,
+          });
+        });
       } catch (error) {
         throw friendly(error);
       }

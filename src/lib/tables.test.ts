@@ -5,15 +5,19 @@ import {
   buildNotice,
   buildTable,
   canEditSeat,
+  canJoinFirstCome,
   canManageTable,
   canSendNotice,
   cleanDisplayName,
   cleanEmail,
+  cleanSeatLimit,
   cleanSeatNote,
   cleanTableName,
   cleanUid,
+  joinPolicyLabel,
   memberEmailsForNotice,
   memberPayload,
+  seatsRemaining,
   sortMembers,
   tablePayload,
 } from "./tables";
@@ -26,10 +30,20 @@ describe("table helpers", () => {
   });
 
   it("builds table and member payloads without ids", () => {
-    const table = buildTable({ id: "abc", name: "Campaign", ownerId: "u1", createdAt: 10 });
+    const table = buildTable({
+      id: "abc",
+      name: "Campaign",
+      ownerId: "u1",
+      seatLimit: 4,
+      joinPolicy: "inviteOnly",
+      createdAt: 10,
+    });
     assert.deepEqual(tablePayload(table), {
       name: "Campaign",
       ownerId: "u1",
+      seatLimit: 4,
+      joinPolicy: "inviteOnly",
+      memberCount: 1,
       createdAt: 10,
     });
     const member = buildMember({
@@ -79,6 +93,29 @@ describe("table helpers", () => {
     assert.throws(() => cleanEmail("bad"));
     assert.equal(cleanUid("abcDEF123"), "abcDEF123");
     assert.throws(() => cleanUid("bad uid"));
+    assert.equal(cleanSeatLimit(4), 4);
+    assert.throws(() => cleanSeatLimit(0));
+  });
+
+  it("tracks open seats and first-come join eligibility", () => {
+    const open = buildTable({
+      id: "t1",
+      name: "Night",
+      ownerId: "u1",
+      seatLimit: 2,
+      joinPolicy: "firstComeFirstServe",
+      memberCount: 1,
+    });
+    const full = { ...open, memberCount: 2 };
+    const inviteOnly = { ...open, joinPolicy: "inviteOnly" as const };
+    assert.equal(seatsRemaining(open), 1);
+    assert.equal(seatsRemaining(full), 0);
+    assert.equal(canJoinFirstCome(open, false), true);
+    assert.equal(canJoinFirstCome(full, false), false);
+    assert.equal(canJoinFirstCome(inviteOnly, false), false);
+    assert.equal(canJoinFirstCome(open, true), false);
+    assert.equal(joinPolicyLabel("inviteOnly"), "Invite only");
+    assert.equal(joinPolicyLabel("firstComeFirstServe"), "First come, first serve");
   });
 
   it("collects notice recipients and builds notice docs", () => {

@@ -1,4 +1,4 @@
-import type { MemberDoc, MemberRole, NoticeDoc, TableDoc } from "./types";
+import type { JoinPolicy, MemberDoc, MemberRole, NoticeDoc, TableDoc } from "./types";
 
 export function cleanTableName(name: string): string {
   const trimmed = name.trim().replace(/\s+/g, " ");
@@ -44,6 +44,32 @@ export function cleanUid(uid: string): string {
   return trimmed;
 }
 
+export function cleanSeatLimit(value: number): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1 || value > 40) {
+    throw new Error("Choose a seat limit between 1 and 40.");
+  }
+  return value;
+}
+
+export function cleanJoinPolicy(value: string): JoinPolicy {
+  if (value === "inviteOnly" || value === "firstComeFirstServe") return value;
+  throw new Error("Choose Invite only or First come, first serve.");
+}
+
+export function joinPolicyLabel(policy: JoinPolicy): string {
+  return policy === "inviteOnly" ? "Invite only" : "First come, first serve";
+}
+
+export function seatsRemaining(table: TableDoc): number {
+  return Math.max(0, table.seatLimit - table.memberCount);
+}
+
+export function canJoinFirstCome(table: TableDoc, alreadyMember: boolean): boolean {
+  if (alreadyMember) return false;
+  if (table.joinPolicy !== "firstComeFirstServe") return false;
+  return seatsRemaining(table) > 0;
+}
+
 export function cleanNoticeSubject(subject: string): string {
   const trimmed = subject.trim().replace(/\s+/g, " ");
   if (trimmed.length < 1 || trimmed.length > 120) {
@@ -71,12 +97,23 @@ export function buildTable(input: {
   id: string;
   name: string;
   ownerId: string;
+  seatLimit: number;
+  joinPolicy: JoinPolicy;
+  memberCount?: number;
   createdAt?: number;
 }): TableDoc {
+  const seatLimit = cleanSeatLimit(input.seatLimit);
+  const memberCount = input.memberCount ?? 1;
+  if (memberCount < 1 || memberCount > seatLimit) {
+    throw new Error("Member count must fit inside the seat limit.");
+  }
   return {
     id: input.id,
     name: cleanTableName(input.name),
     ownerId: input.ownerId,
+    seatLimit,
+    joinPolicy: cleanJoinPolicy(input.joinPolicy),
+    memberCount,
     createdAt: input.createdAt ?? Date.now(),
   };
 }
@@ -121,6 +158,9 @@ export function tablePayload(table: TableDoc): Omit<TableDoc, "id"> {
   return {
     name: table.name,
     ownerId: table.ownerId,
+    seatLimit: table.seatLimit,
+    joinPolicy: table.joinPolicy,
+    memberCount: table.memberCount,
     createdAt: table.createdAt,
   };
 }

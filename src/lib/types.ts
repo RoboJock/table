@@ -1,5 +1,7 @@
 export type MemberRole = "owner" | "member";
 
+export type JoinPolicy = "inviteOnly" | "firstComeFirstServe";
+
 export type AppUser = {
   id: string;
   name: string;
@@ -10,6 +12,11 @@ export type TableDoc = {
   id: string;
   name: string;
   ownerId: string;
+  /** Max people at the table, including the owner. */
+  seatLimit: number;
+  joinPolicy: JoinPolicy;
+  /** Living member count; kept in sync on join/leave/invite/remove. */
+  memberCount: number;
   createdAt: number;
 };
 

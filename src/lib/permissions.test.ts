@@ -12,7 +12,14 @@ import {
 import { buildMember, buildTable } from "./tables";
 
 describe("permission brief deny cases", () => {
-  const table = buildTable({ id: "t1", name: "Night", ownerId: "owner1", createdAt: 1 });
+  const table = buildTable({
+    id: "t1",
+    name: "Night",
+    ownerId: "owner1",
+    seatLimit: 4,
+    joinPolicy: "inviteOnly",
+    createdAt: 1,
+  });
   const members = [
     buildMember({ uid: "owner1", displayName: "Owner", role: "owner" }),
     buildMember({ uid: "member2", displayName: "Member", role: "member" }),
